@@ -16,6 +16,8 @@ Following image created using `(black:-1.8)` in the prompt with NegPiP. It's no 
 
 ![image2](https://github.com/hako-mikan/sd-webui-negpip/blob/imgs/sample2.jpg)
 
+By the way, this is what happens when you don't use either NegPiP or negative prompts.
+![image2](https://github.com/hako-mikan/sd-webui-negpip/blob/imgs/sample3.jpg)
 
 # 概要
 この拡張は、stable diffusion web-uiのプロンプトおよびクロスアテンションを拡張して、負の効果を持つプロンプトをプロンプト内で、正の効果を持つプロンプトをネガティブプロンプト内で使用できるようにします。通常、描きたくないものはネガティブプロンプトに書かれますが、ネガティブプロンプトの計算上、あまり効果が現れないことがあります。この拡張では、プロンプトと同程度の効果を持つ負のプロンプトを使用できるようにします。これにより、以前はネガティブプロンプトに置いて値を大きくしすぎて崩壊していたような単語でも、プロンプトに負の効果を持たせることができ、より強い効果が期待できます。
@@ -28,3 +30,7 @@ Activeにチェックを入れることで有効になります。プロンプ�
 
 これはNegPiPでプロンプトに(black:-1.8)を入れました。黒くなくなりましたね。
 ![](https://github.com/hako-mikan/sd-webui-negpip/blob/imgs/sample2.jpg)
+
+ちなみに、NegPiPもネガティブプロンプトも使わないとこうなります。
+![image2](https://github.com/hako-mikan/sd-webui-negpip/blob/imgs/sample3.jpg)
+
