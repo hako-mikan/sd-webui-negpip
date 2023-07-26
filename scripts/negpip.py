@@ -48,6 +48,9 @@ class Script(modules.scripts.Script):
 
         tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
 
+        p.hr_prompts = p.prompts
+        p.hr_negative_prompt = p.negative_prompts
+
         ptokens, ptokensum = tokenizer(p.prompts[0])
         for target in self.np:
             ttokens, _ = tokenizer(target)
