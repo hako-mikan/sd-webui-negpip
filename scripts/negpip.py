@@ -32,9 +32,14 @@ class Script(modules.scripts.Script):
 
         self.active = active
         self.isxl = hasattr(shared.sd_model,"conditioner")
+        
+        self.rev = not p.sampler_name in ["DDIM", "PLMS", "UniPC"]
 
         parsed_p = prompt_parser.parse_prompt_attention(p.prompts[0])
         parsed_np = prompt_parser.parse_prompt_attention(p.negative_prompts[0])
+
+        #print(parsed_p)
+        #print(parsed_np)
 
         for text,weight in parsed_p:
             if weight < 0:
@@ -76,6 +81,8 @@ class Script(modules.scripts.Script):
 
         self.eq = self.pset == self.nset
 
+        #print(self.np,self.pn,self.npt,self.pnt)
+
         self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
 
     def postprocess(self, p, processed, *args):
@@ -97,9 +104,9 @@ def hook_forward(self, module):
 
         if self.active :
             if self.eq:
-                for t in self.npt:
+                for t in self.npt if self.rev else self.pnt:
                     v[0:v.shape[0]//2,t,:] = -v[0:v.shape[0]//2,t,:]
-                for t in self.pnt:
+                for t in self.pnt if self.rev else self.npt:
                     v[v.shape[0]//2:,t,:] = -v[v.shape[0]//2:,t,:]
             else:
                 if v.shape[0] == self.pset * 77:
