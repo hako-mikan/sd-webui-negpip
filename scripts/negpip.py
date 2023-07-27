@@ -6,6 +6,8 @@ import modules
 from modules import prompt_parser
 from modules import shared
 
+debug = False
+
 class Script(modules.scripts.Script):   
     def __init__(self):
         self.active = False
@@ -41,9 +43,13 @@ class Script(modules.scripts.Script):
         parsed_p = prompt_parser.parse_prompt_attention(p.prompts[0])
         parsed_np = prompt_parser.parse_prompt_attention(p.negative_prompts[0])
 
+        if debug: print(parsed_p)
+        if debug:print(parsed_np)
+
         np ,pn, tp, tnp = [], [], [], []
 
         for text,weight in parsed_p:
+            if text == "BREAK": continue
             if weight < 0:
                 np.append([text,weight])
             else:
@@ -51,6 +57,7 @@ class Script(modules.scripts.Script):
 
         tnp =[]
         for text,weight in parsed_np:
+            if text == "BREAK": continue
             if weight < 0:
                 pn.append([text,weight])
             else:
@@ -103,6 +110,8 @@ class Script(modules.scripts.Script):
 
         self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
 
+        print(f"NegPiP enable: Pos:{self.contokens}, Neg{self.untokens}")
+
     def postprocess(self, p, processed, *args):
         if hasattr(self,"handle"):
             hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
@@ -110,6 +119,7 @@ class Script(modules.scripts.Script):
 
 def hook_forward(self, module):
     def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
+        if debug: print(x.shape,context.shape)
         def main_foward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
             h = module.heads
 
@@ -118,14 +128,14 @@ def hook_forward(self, module):
             context = atm.default(context, x)
             k = module.to_k(context)
             v = module.to_v(context)
-            #print(h,context.shape,q.shape,k.shape,v.shape)
+            if debug: print(h,context.shape,q.shape,k.shape,v.shape)
             q, k, v = map(lambda t: atm.rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
             sim = atm.einsum('b i d, b j d -> b i j', q, k) * module.scale
 
             if self.active:
                 for token in tokens:
                     start = (v.shape[1]//77 - len(tokens)) * 77
-                    #print(start+1,start+token)
+                    if debug: print(start+1,start+token)
                     v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
                     start = start + 77
 
@@ -141,6 +151,8 @@ def hook_forward(self, module):
 
             out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
             return module.to_out(out)
+
+        if debug: print(x.shape[0],self.batch *2)
 
         if x.shape[0] == self.batch *2:
             if self.rev:
@@ -158,11 +170,17 @@ def hook_forward(self, module):
             out = torch.cat([xn,xp]) if self.rev else torch.cat([xp,xn])
 
         else:
-            if context.shape[1] == self.conlen:
-                if self.conds is not None:context = torch.cat([contp,self.conds],1)
-            elif context.shape[1] == self.unlen:
-                if self.unconds is not None:context = torch.cat([contn,self.unconds],1)
-            out = main_foward(x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,self.untokens)
+            if debug: print(context.shape[1] , self.conlen,self.unlen)
+            tokens = []
+            if context.shape[1] == self.conlen * 77:
+                if self.conds is not None:
+                    context = torch.cat([context,self.conds],1)
+                    tokens = self.contokens
+            elif context.shape[1] == self.unlen * 77:
+                if self.unconds is not None:
+                    context = torch.cat([context,self.unconds],1)
+                    tokens = self.untokens
+            out = main_foward(x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
         return out
 
     return forward
