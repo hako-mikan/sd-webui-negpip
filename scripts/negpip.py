@@ -69,18 +69,19 @@ class Script(modules.scripts.Script):
         p.negative_prompts =  [" ".join(tnp)]*self.batch
 
         p.hr_prompts = p.prompts
-        p.hr_negative_prompt = p.negative_prompts
+        p.hr_negative_prompts = p.negative_prompts
 
         def conddealer(targets):
             conds =[]
             start = None
             end = None
             for target in targets:
-                cond = prompt_parser.get_learned_conditioning(shared.sd_model,[f"({target[0]}:{-target[1]})"],0)
-                if start is None: start = cond[0][0].cond[0:1,:]
-                if end is None: end = cond[0][0].cond[-1:,:]
+                input = prompt_parser.SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,0)
+                if start is None: start = cond[0][0].cond[0:1,:] if not self.isxl else cond[0][0].cond["crossattn"][0:1,:]
+                if end is None: end = cond[0][0].cond[-1:,:] if not self.isxl else cond[0][0].cond["crossattn"][-1:,:]
                 _, tokenlen = tokenizer(target[0])
-                conds.append(cond[0][0].cond[1:tokenlen +2,:])
+                conds.append(cond[0][0].cond[1:tokenlen +2,:] if not self.isxl else cond[0][0].cond["crossattn"][1:tokenlen +2,:] ) 
             conds = torch.cat(conds, 0)
 
             conds = torch.split(conds, 75, dim=0)
