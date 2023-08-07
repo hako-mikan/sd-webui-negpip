@@ -89,7 +89,10 @@ class Script(modules.scripts.Script):
             end = None
             for target in targets:
                 if hasattr(p,'prompts'):
-                    input = prompt_parser.SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                    if hasattr(prompt_parser,'SdConditioning'):
+                        input = prompt_parser.SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                    else:
+                        input = [f"({target[0]}:{-target[1]})"]
                 else:
                     input = [f"({target[0]}:{-target[1]})"]
                 cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,0)
