@@ -40,7 +40,7 @@ class Script(modules.scripts.Script):
         
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
 
-        if self.isxl:
+        if hasattr(p,'prompts'):
             parsed_p = prompt_parser.parse_prompt_attention(p.prompts[0])
             parsed_np = prompt_parser.parse_prompt_attention(p.negative_prompts[0])
         else:
@@ -69,14 +69,14 @@ class Script(modules.scripts.Script):
 
         tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
 
-        if self.isxl:
+        if hasattr(p,'prompts'):
             p.prompts = [" ".join(tp)]*self.batch
             p.negative_prompts =  [" ".join(tnp)]*self.batch
         else:
             p.prompt = [" ".join(tp)]*self.batch
             p.negative_prompt =  [" ".join(tnp)]*self.batch
 
-        if self.isxl:
+        if hasattr(p,'prompts'):
             p.hr_prompts = p.prompts
             p.hr_negative_prompts = p.negative_prompts
         else:
@@ -88,7 +88,7 @@ class Script(modules.scripts.Script):
             start = None
             end = None
             for target in targets:
-                if self.isxl:
+                if hasattr(p,'prompts'):
                     input = prompt_parser.SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
                 else:
                     input = [f"({target[0]}:{-target[1]})"]
@@ -121,7 +121,7 @@ class Script(modules.scripts.Script):
         def calcsets(A, B):
             return A // B if A % B == 0 else A // B + 1
 
-        if self.isxl:
+        if hasattr(p,'prompts'):
             self.conlen = calcsets(tokenizer(p.prompts [0])[1],75)
             self.unlen = calcsets(tokenizer(p.negative_prompts[0])[1],75)
         else:
