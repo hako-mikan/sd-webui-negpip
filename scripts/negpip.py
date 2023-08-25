@@ -1,3 +1,4 @@
+from asyncio.windows_utils import PIPE
 import gradio as gr
 import torch
 import ldm.modules.attention as atm
@@ -5,8 +6,10 @@ import modules.ui
 import modules
 from modules import prompt_parser
 from modules import shared
+from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser,CFGDenoisedParams, on_cfg_denoised
 
 debug = False
+debug_p = False
 
 class Script(modules.scripts.Script):   
     def __init__(self):
@@ -40,65 +43,46 @@ class Script(modules.scripts.Script):
         
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
 
-        if hasattr(p,'prompts'):
-            parsed_p = prompt_parser.parse_prompt_attention(p.prompts[0])
-            parsed_np = prompt_parser.parse_prompt_attention(p.negative_prompts[0])
-        else:
-            parsed_p = prompt_parser.parse_prompt_attention(p.prompt)
-            parsed_np = prompt_parser.parse_prompt_attention(p.negative_prompt)
+        scheduled_p = prompt_parser.get_learned_conditioning_prompt_schedules(p.prompts,p.steps)
+        scheduled_np = prompt_parser.get_learned_conditioning_prompt_schedules(p.negative_prompts,p.steps)
 
-        if debug: print(parsed_p)
-        if debug:print(parsed_np)
+        if debug_p:print(scheduled_p)
+        if debug_p:print(scheduled_np)
 
-        np ,pn, tp, tnp = [], [], [], []
-
-        for text,weight in parsed_p:
-            if text == "BREAK": continue
-            if weight < 0:
-                np.append([text,weight])
-            else:
-                tp.append(f"({text}:{weight})" if weight != 1.0 else text)
-
-        tnp =[]
-        for text,weight in parsed_np:
-            if text == "BREAK": continue
-            if weight < 0:
-                pn.append([text,weight])
-            else:
-                tnp.append(f"({text}:{weight})" if weight != 1.0 else text)
+        def getshedulednegs(scheduled,prompts):
+            output = []
+            for i, batch_shedule in enumerate(scheduled):
+                stepout = []
+                for step,prompt in batch_shedule:
+                    parsed = prompt_parser.parse_prompt_attention(prompt)
+                    tp = []
+                    for text,weight in parsed:
+                        if text == "BREAK": continue
+                        if weight < 0:
+                            tp.append([text,weight])
+                            prompts[i] = prompts[i].replace(f"({text}:{weight})","")
+                    stepout.append([step,tp])
+                output.append(stepout)
+            return output
+        
+        nip = getshedulednegs(scheduled_p,p.prompts)
+        pin = getshedulednegs(scheduled_np,p.negative_prompts)
 
         tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
 
-        if hasattr(p,'prompts'):
-            p.prompts = [" ".join(tp)]*self.batch
-            p.negative_prompts =  [" ".join(tnp)]*self.batch
-        else:
-            p.prompt = [" ".join(tp)]*self.batch
-            p.negative_prompt =  [" ".join(tnp)]*self.batch
-
-        if hasattr(p,'prompts'):
-            p.hr_prompts = p.prompts
-            p.hr_negative_prompts = p.negative_prompts
-        else:
-            p.hr_prompts = p.prompt
-            p.hr_negative_prompts = p.negative_prompt
+        p.hr_prompts = p.prompts
+        p.hr_negative_prompts = p.negative_prompts
 
         def conddealer(targets):
             conds =[]
             start = None
             end = None
             for target in targets:
-                if hasattr(p,'prompts'):
-                    if hasattr(prompt_parser,'SdConditioning'):
-                        input = prompt_parser.SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
-                    else:
-                        input = [f"({target[0]}:{-target[1]})"]
-                else:
-                    input = [f"({target[0]}:{-target[1]})"]
-                cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,0)
+                input = prompt_parser.SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                 if start is None: start = cond[0][0].cond[0:1,:] if not self.isxl else cond[0][0].cond["crossattn"][0:1,:]
                 if end is None: end = cond[0][0].cond[-1:,:] if not self.isxl else cond[0][0].cond["crossattn"][-1:,:]
-                _, tokenlen = tokenizer(target[0])
+                token, tokenlen = tokenizer(target[0])
                 conds.append(cond[0][0].cond[1:tokenlen +2,:] if not self.isxl else cond[0][0].cond["crossattn"][1:tokenlen +2,:] ) 
             conds = torch.cat(conds, 0)
 
@@ -113,36 +97,63 @@ class Script(modules.scripts.Script):
             condout = torch.cat(condsout,0).unsqueeze(0)
             return condout.repeat(self.batch,1,1), condcount
 
-        if np:
-            self.conds, self.contokens = conddealer(np)
-        
-        if pn:
-            self.unconds, self.untokens = conddealer(pn)
+        def calcconds(targetlist):
+            outconds = []
+            for batch in targetlist:
+                stepconds = []
+                for step, targets in batch:
+                    print(step,targets)
+                    if targets:
+                        conds, contokens = conddealer(targets)
+                        stepconds.append([step, conds, contokens])
+                    else:
+                        stepconds.append([step, None, None])
+                outconds.append(stepconds)
+            return outconds
+        self.conds_all = calcconds(nip)
+        self.unconds_all = calcconds(pin)
 
         resetpcache(p)
         
         def calcsets(A, B):
             return A // B if A % B == 0 else A // B + 1
 
-        if hasattr(p,'prompts'):
-            self.conlen = calcsets(tokenizer(p.prompts [0])[1],75)
-            self.unlen = calcsets(tokenizer(p.negative_prompts[0])[1],75)
-        else:
-            self.conlen = calcsets(tokenizer(p.prompt [0])[1],75)
-            self.unlen = calcsets(tokenizer(p.negative_prompt[0])[1],75)
+        self.conlen = calcsets(tokenizer(p.prompts[0])[1],75)
+        self.unlen = calcsets(tokenizer(p.negative_prompts[0])[1],75)
 
         self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
+        if not hasattr(self,"negpip_dr_callbacks"):
+            self.negpip_dr_callbacks = on_cfg_denoiser(self.denoiser_callback)
 
-        print(f"NegPiP enable: Pos:{self.contokens}, Neg{self.untokens}")
+        print(f"NegPiP enable, Positive:{self.conds_all[0][2]},Negative:{self.unconds_all[0][2]}")
 
     def postprocess(self, p, processed, *args):
         if hasattr(self,"handle"):
             hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
             del self.handle
+        self.conds_all = None
+        self.unconds_all = None
+    
+    def denoiser_callback(self, params: CFGDenoiserParams):
+        # params.x [batch,ch[4],height,width]
+        #print(self.activec,self.colors,self.ocells,self.icells,params.sampling_step)
+        if self.active:
+            for step, conds, tokens in self.conds_all[0]:
+                if step >= params.sampling_step + 2:
+                    self.conds = conds
+                    self.contokens = tokens
+                    if debug: print(f"current:{params.sampling_step + 2},selected:{step}")
+                    break
+
+            for step, unconds, uncokens in self.unconds_all[0]:
+                if step >= params.sampling_step + 2:
+                    self.unconds = unconds
+                    self.untokens = uncokens
+                    break
 
 def hook_forward(self, module):
     def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
-        if debug: print(x.shape,context.shape)
+        if debug: print("x.shape:",x.shape,"context.shape:",context.shape,"self.contokens",self.contokens,"self.untokens",self.untokens)
         def main_foward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
             h = module.heads
 
@@ -156,11 +167,11 @@ def hook_forward(self, module):
             sim = atm.einsum('b i d, b j d -> b i j', q, k) * module.scale
 
             if self.active:
-                for token in tokens:
-                    start = (v.shape[1]//77 - len(tokens)) * 77
-                    if debug: print(start+1,start+token)
-                    v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
-                    start = start + 77
+                if tokens:
+                    for token in tokens:
+                        start = (v.shape[1]//77 - len(tokens)) * 77
+                        if debug: print("start:",start+1,"stop:",start+token)
+                        v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
 
             if atm.exists(mask):
                 mask = atm.rearrange(mask, 'b ... -> b (...)')
@@ -175,7 +186,7 @@ def hook_forward(self, module):
             out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
             return module.to_out(out)
 
-        if debug: print(x.shape[0],self.batch *2)
+        if debug: print("x.shape[0]:",x.shape[0],"batch:",self.batch *2)
 
         if x.shape[0] == self.batch *2:
             if self.rev:
@@ -205,8 +216,8 @@ def hook_forward(self, module):
                     tokens = self.untokens
             out = main_foward(x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
         return out
-
     return forward
+
 
 def hook_forwards(self, root_module: torch.nn.Module, remove=False):
     for name, module in root_module.named_modules():
