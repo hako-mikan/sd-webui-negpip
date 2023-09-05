@@ -1,15 +1,18 @@
-from asyncio.windows_utils import PIPE
 import gradio as gr
 import torch
+import re
 import ldm.modules.attention as atm
 import modules.ui
 import modules
 from modules import prompt_parser
+
 from modules import shared
 from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser,CFGDenoisedParams, on_cfg_denoised
 
 debug = False
 debug_p = False
+
+minusgetter = r'\(([^:]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
 
 class Script(modules.scripts.Script):   
     def __init__(self):
@@ -20,6 +23,8 @@ class Script(modules.scripts.Script):
         self.unlen = []
         self.contokens = []   
         self.untokens = []
+
+        self.enable_rp_latent = False
         
     def title(self):
         return "NegPiP"
@@ -34,8 +39,16 @@ class Script(modules.scripts.Script):
         return [active]
 
     def process_batch(self, p, active,**kwargs):
+        print("NegPIPtest",active)
         self.__init__()
         if not active:return
+
+        self.rpscript = None
+        #get infomation of regponal prompter
+        from modules.scripts import scripts_txt2img
+        for script in scripts_txt2img.alwayson_scripts:
+            if "rp.py" in script.filename:
+                self.rpscript = script
 
         self.active = active
         self.batch = p.batch_size
@@ -46,6 +59,8 @@ class Script(modules.scripts.Script):
         scheduled_p = prompt_parser.get_learned_conditioning_prompt_schedules(p.prompts,p.steps)
         scheduled_np = prompt_parser.get_learned_conditioning_prompt_schedules(p.negative_prompts,p.steps)
 
+        tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
+
         if debug_p:print(scheduled_p)
         if debug_p:print(scheduled_np)
 
@@ -53,22 +68,40 @@ class Script(modules.scripts.Script):
             output = []
             for i, batch_shedule in enumerate(scheduled):
                 stepout = []
+                seps = None
+                if self.rpscript:
+                    if hasattr(self.rpscript,"seps"):
+                        seps = self.rpscript.seps
+                    self.enable_rp_latent = seps == "AND"
+
                 for step,prompt in batch_shedule:
-                    parsed = prompt_parser.parse_prompt_attention(prompt)
-                    tp = []
-                    for text,weight in parsed:
-                        if text == "BREAK": continue
-                        if weight < 0:
-                            tp.append([text,weight])
-                            prompts[i] = prompts[i].replace(f"({text}:{weight})","")
-                    stepout.append([step,tp])
+                    sep_prompts = prompt.split(seps) if seps else [prompt]
+                    padd = 0
+                    padtextweight = []
+                    for sep_prompt in sep_prompts:
+                        minusmatches = re.finditer(minusgetter, sep_prompt)
+                        minus_targets = []
+                        textweights = []
+                        for minusmatch in minusmatches:
+                            minus_targets.append(minusmatch.group().replace("(","").replace(")",""))
+
+                            prompts[i] = prompts[i].replace(minusmatch.group(),"")
+                        minus_targets = [x.split(":") for x in minus_targets]
+                        print(minus_targets)
+                        for text,weight in minus_targets:
+                            weight = float(weight)
+                            if text == "BREAK": continue
+                            if weight < 0:
+                                textweights.append([text,weight])
+                        padtextweight.append([padd,textweights])
+                        tokens, tokensnum = tokenizer(sep_prompt)
+                        padd = tokensnum // 75 + 1 + padd
+                    stepout.append([step,padtextweight])
                 output.append(stepout)
             return output
         
         nip = getshedulednegs(scheduled_p,p.prompts)
         pin = getshedulednegs(scheduled_np,p.negative_prompts)
-
-        tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
 
         p.hr_prompts = p.prompts
         p.hr_negative_prompts = p.negative_prompts
@@ -101,15 +134,18 @@ class Script(modules.scripts.Script):
             outconds = []
             for batch in targetlist:
                 stepconds = []
-                for step, targets in batch:
-                    print(step,targets)
-                    if targets:
-                        conds, contokens = conddealer(targets)
-                        stepconds.append([step, conds, contokens])
-                    else:
-                        stepconds.append([step, None, None])
+                for step, regions in batch:
+                    regionconds = []
+                    for region, targets in regions:
+                        if targets:
+                            conds, contokens = conddealer(targets)
+                            regionconds.append([region, conds, contokens])
+                        else:
+                            regionconds.append([region, None, None])
+                    stepconds.append([step,regionconds])
                 outconds.append(stepconds)
             return outconds
+            
         self.conds_all = calcconds(nip)
         self.unconds_all = calcconds(pin)
 
@@ -121,11 +157,19 @@ class Script(modules.scripts.Script):
         self.conlen = calcsets(tokenizer(p.prompts[0])[1],75)
         self.unlen = calcsets(tokenizer(p.negative_prompts[0])[1],75)
 
-        self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
         if not hasattr(self,"negpip_dr_callbacks"):
             self.negpip_dr_callbacks = on_cfg_denoiser(self.denoiser_callback)
 
-        print(f"NegPiP enable, Positive:{self.conds_all[0][2]},Negative:{self.unconds_all[0][2]}")
+        #disable hookforward if hookfoward in regional prompter is eanble. 
+        #negpip operation is treated in regional prompter
+
+        already_hooked = False
+        if self.rpscript is not None:already_hooked = self.rpscript.hooked
+
+        if not already_hooked:
+            self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
+
+        print(f"NegPiP enable, Positive:{self.conds_all[0][0][1][0][2]},Negative:{self.unconds_all[0][0][1][0][2]}")
 
     def postprocess(self, p, processed, *args):
         if hasattr(self,"handle"):
@@ -138,84 +182,120 @@ class Script(modules.scripts.Script):
         # params.x [batch,ch[4],height,width]
         #print(self.activec,self.colors,self.ocells,self.icells,params.sampling_step)
         if self.active:
-            for step, conds, tokens in self.conds_all[0]:
-                if step >= params.sampling_step + 2:
-                    self.conds = conds
-                    self.contokens = tokens
-                    if debug: print(f"current:{params.sampling_step + 2},selected:{step}")
-                    break
+            self.latenti = 0 
 
-            for step, unconds, uncokens in self.unconds_all[0]:
+            condslist = []
+            tokenslist = []
+            for step, regions in self.conds_all[0]:
                 if step >= params.sampling_step + 2:
-                    self.unconds = unconds
-                    self.untokens = uncokens
+                    for region, conds, tokens in regions:
+                        condslist.append(conds)
+                        tokenslist.append(tokens)
+                        if debug: print(f"current:{params.sampling_step + 2},selected:{step}")
                     break
+            self.conds = condslist
+            self.contokens = tokenslist
+
+            uncondslist = []
+            untokenslist = []
+            for step, regions  in self.unconds_all[0]:
+                if step >= params.sampling_step + 2:
+                    for region, unconds, untokens in regions:
+                        uncondslist.append(unconds)
+                        untokenslist.append(untokens)
+                        break
+
+            self.unconds = uncondslist
+            self.untokens = untokenslist
 
 def hook_forward(self, module):
     def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
         if debug: print("x.shape:",x.shape,"context.shape:",context.shape,"self.contokens",self.contokens,"self.untokens",self.untokens)
-        def main_foward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
-            h = module.heads
+        def sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,conds,contokens,unconds,untokens, latent = None):
+            def main_foward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
+                h = module.heads
 
-            q = module.to_q(x)
+                q = module.to_q(x)
 
-            context = atm.default(context, x)
-            k = module.to_k(context)
-            v = module.to_v(context)
-            if debug: print(h,context.shape,q.shape,k.shape,v.shape)
-            q, k, v = map(lambda t: atm.rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
-            sim = atm.einsum('b i d, b j d -> b i j', q, k) * module.scale
+                context = atm.default(context, x)
+                k = module.to_k(context)
+                v = module.to_v(context)
+                if debug: print(h,context.shape,q.shape,k.shape,v.shape)
+                q, k, v = map(lambda t: atm.rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+                sim = atm.einsum('b i d, b j d -> b i j', q, k) * module.scale
 
-            if self.active:
-                if tokens:
-                    for token in tokens:
-                        start = (v.shape[1]//77 - len(tokens)) * 77
-                        if debug: print("start:",start+1,"stop:",start+token)
-                        v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
+                if self.active:
+                    if tokens:
+                        for token in tokens:
+                            start = (v.shape[1]//77 - len(tokens)) * 77
+                            if debug: print("start:",start+1,"stop:",start+token)
+                            v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
 
-            if atm.exists(mask):
-                mask = atm.rearrange(mask, 'b ... -> b (...)')
-                max_neg_value = -torch.finfo(sim.dtype).max
-                mask = atm.repeat(mask, 'b j -> (b h) () j', h=h)
-                sim.masked_fill_(~mask, max_neg_value)
+                if atm.exists(mask):
+                    mask = atm.rearrange(mask, 'b ... -> b (...)')
+                    max_neg_value = -torch.finfo(sim.dtype).max
+                    mask = atm.repeat(mask, 'b j -> (b h) () j', h=h)
+                    sim.masked_fill_(~mask, max_neg_value)
 
-            attn = sim.softmax(dim=-1)
-            #print(h,context.shape,q.shape,k.shape,v.shape,attn.shape)
-            out = atm.einsum('b i j, b j d -> b i d', attn, v)
+                attn = sim.softmax(dim=-1)
+                #print(h,context.shape,q.shape,k.shape,v.shape,attn.shape)
+                out = atm.einsum('b i j, b j d -> b i d', attn, v)
 
-            out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
-            return module.to_out(out)
+                out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
+                return module.to_out(out)
 
-        if debug: print("x.shape[0]:",x.shape[0],"batch:",self.batch *2)
+            if debug: print("x.shape[0]:",x.shape[0],"batch:",self.batch *2)
 
-        if x.shape[0] == self.batch *2:
-            if self.rev:
-                contn,contp = context.chunk(2)
-                ixn,ixp = x.chunk(2)
-            else:
-                contp,contn =  context.chunk(2)
-                ixp,ixn = x.chunk(2)#x[0:self.batch,:,:],x[self.batch:,:,:]
+            if x.shape[0] == self.batch *2:
+                if self.rev:
+                    contn,contp = context.chunk(2)
+                    ixn,ixp = x.chunk(2)
+                else:
+                    contp,contn =  context.chunk(2)
+                    ixp,ixn = x.chunk(2)#x[0:self.batch,:,:],x[self.batch:,:,:]
+                
+                if conds is not None:contp = torch.cat((contp,conds),1)
+                if unconds is not None:contn =  torch.cat((contn,unconds),1)
+                xp = main_foward(ixp,contp,mask,additional_tokens,n_times_crossframe_attn_in_self,contokens)
+                xn = main_foward(ixn,contn,mask,additional_tokens,n_times_crossframe_attn_in_self,untokens)
             
-            if self.conds is not None:contp = torch.cat((contp,self.conds),1)
-            if self.unconds is not None:contn =  torch.cat((contn,self.unconds),1)
-            xp = main_foward(ixp,contp,mask,additional_tokens,n_times_crossframe_attn_in_self,self.contokens)
-            xn = main_foward(ixn,contn,mask,additional_tokens,n_times_crossframe_attn_in_self,self.untokens)
-        
-            out = torch.cat([xn,xp]) if self.rev else torch.cat([xp,xn])
+                out = torch.cat([xn,xp]) if self.rev else torch.cat([xp,xn])
 
+            elif latent is not None:
+                if latent:
+                    conds = conds if conds is not None else None
+                else:
+                    conds = unconds if unconds is not None else None
+
+                if conds is not None:context = torch.cat([context,conds],1)
+                tokens = contokens if contokens is not None else untokens
+
+                out = main_foward(x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
+                return out
+
+            else:
+                if debug: print(context.shape[1] , self.conlen,self.unlen)
+                tokens = []
+                if context.shape[1] == self.conlen * 77:
+                    if conds is not None:
+                        context = torch.cat([context,conds],1)
+                        tokens = contokens
+                elif context.shape[1] == self.unlen * 77:
+                    if unconds is not None:
+                        context = torch.cat([context,unconds],1)
+                        tokens = untokens
+                out = main_foward(x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
+                return out
+        if self.enable_rp_latent:
+            if len(self.conds) - 1 >= self.latenti:
+                out = sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[self.latenti],self.contokens[self.latenti],None,None ,latent = True)
+                self.latenti += 1
+            else:
+                out = sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,None,None,self.unconds[0],self.untokens[0], latent = False)
+                self.latenti = 0
+            return out
         else:
-            if debug: print(context.shape[1] , self.conlen,self.unlen)
-            tokens = []
-            if context.shape[1] == self.conlen * 77:
-                if self.conds is not None:
-                    context = torch.cat([context,self.conds],1)
-                    tokens = self.contokens
-            elif context.shape[1] == self.unlen * 77:
-                if self.unconds is not None:
-                    context = torch.cat([context,self.unconds],1)
-                    tokens = self.untokens
-            out = main_foward(x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
-        return out
+            return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[0],self.contokens[0],self.unconds[0],self.untokens[0])
     return forward
 
 
