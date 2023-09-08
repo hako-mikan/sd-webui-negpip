@@ -164,7 +164,7 @@ class Script(modules.scripts.Script):
         #negpip operation is treated in regional prompter
 
         already_hooked = False
-        if self.rpscript is not None:already_hooked = self.rpscript.hooked
+        if self.rpscript is not None and hasattr(self.rpscript,"hooked"):already_hooked = self.rpscript.hooked
 
         if not already_hooked:
             self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
