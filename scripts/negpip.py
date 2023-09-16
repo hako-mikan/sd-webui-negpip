@@ -12,7 +12,7 @@ from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser,CFGDenoi
 debug = False
 debug_p = False
 
-minusgetter = r'\(([^:]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
+minusgetter = r'\(([^(:)]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
 
 class Script(modules.scripts.Script):   
     def __init__(self):
