@@ -260,6 +260,7 @@ def hook_forward(self, module):
                 xn = main_foward(ixn,contn,mask,additional_tokens,n_times_crossframe_attn_in_self,untokens)
             
                 out = torch.cat([xn,xp]) if self.rev else torch.cat([xp,xn])
+                return out
 
             elif latent is not None:
                 if latent:
