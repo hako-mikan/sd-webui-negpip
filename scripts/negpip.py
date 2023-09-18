@@ -7,7 +7,7 @@ import modules
 from modules import prompt_parser
 
 from modules import shared
-from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser,CFGDenoisedParams, on_cfg_denoised
+from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser
 
 debug = False
 debug_p = False
@@ -87,7 +87,7 @@ class Script(modules.scripts.Script):
 
                             prompts[i] = prompts[i].replace(minusmatch.group(),"")
                         minus_targets = [x.split(":") for x in minus_targets]
-                        print(minus_targets)
+                        #print(minus_targets)
                         for text,weight in minus_targets:
                             weight = float(weight)
                             if text == "BREAK": continue
@@ -111,7 +111,7 @@ class Script(modules.scripts.Script):
             start = None
             end = None
             for target in targets:
-                input = prompt_parser.SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
                 cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                 if start is None: start = cond[0][0].cond[0:1,:] if not self.isxl else cond[0][0].cond["crossattn"][0:1,:]
                 if end is None: end = cond[0][0].cond[-1:,:] if not self.isxl else cond[0][0].cond["crossattn"][-1:,:]
@@ -149,6 +149,9 @@ class Script(modules.scripts.Script):
         self.conds_all = calcconds(nip)
         self.unconds_all = calcconds(pin)
 
+        #print(self.conds_all)
+        #print(self.unconds_all)
+
         resetpcache(p)
         
         def calcsets(A, B):
@@ -180,7 +183,6 @@ class Script(modules.scripts.Script):
     
     def denoiser_callback(self, params: CFGDenoiserParams):
         # params.x [batch,ch[4],height,width]
-        #print(self.activec,self.colors,self.ocells,self.icells,params.sampling_step)
         if self.active:
             self.latenti = 0 
 
@@ -258,6 +260,7 @@ def hook_forward(self, module):
                 if unconds is not None:contn =  torch.cat((contn,unconds),1)
                 xp = main_foward(ixp,contp,mask,additional_tokens,n_times_crossframe_attn_in_self,contokens)
                 xn = main_foward(ixn,contn,mask,additional_tokens,n_times_crossframe_attn_in_self,untokens)
+                #print(conds,contokens,unconds,untokens)
             
                 out = torch.cat([xn,xp]) if self.rev else torch.cat([xp,xn])
                 return out
@@ -296,7 +299,11 @@ def hook_forward(self, module):
                 self.latenti = 0
             return out
         else:
-            return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[0],self.contokens[0],self.unconds[0],self.untokens[0])
+            #print(self.conds,self.unconds)
+            if self.conds is not None and self.unconds is not None:
+                return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[0],self.contokens[0],self.unconds[0],self.untokens[0])
+            else:
+                return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,None,None,None,None)
     return forward
 
 
@@ -312,3 +319,16 @@ def resetpcache(p):
     p.cached_uc = [None,None]
     p.cached_hr_c = [None, None]
     p.cached_hr_uc = [None, None]
+
+
+class SdConditioning(list):
+    def __init__(self, prompts, is_negative_prompt=False, width=None, height=None, copy_from=None):
+        super().__init__()
+        self.extend(prompts)
+
+        if copy_from is None:
+            copy_from = prompts
+
+        self.is_negative_prompt = is_negative_prompt or getattr(copy_from, 'is_negative_prompt', False)
+        self.width = width or getattr(copy_from, 'width', None)
+        self.height = height or getattr(copy_from, 'height', None)
