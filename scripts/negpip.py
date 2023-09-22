@@ -183,6 +183,7 @@ class Script(modules.scripts.Script):
     
     def denoiser_callback(self, params: CFGDenoiserParams):
         # params.x [batch,ch[4],height,width]
+        if debug: print(params.text_cond.shape)
         if self.active:
             self.latenti = 0 
 
@@ -214,7 +215,86 @@ def hook_forward(self, module):
     def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
         if debug: print("x.shape:",x.shape,"context.shape:",context.shape,"self.contokens",self.contokens,"self.untokens",self.untokens)
         def sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,conds,contokens,unconds,untokens, latent = None):
-            def main_foward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
+            if debug: print("x.shape[0]:",x.shape[0],"batch:",self.batch *2)
+            if x.shape[0] == self.batch *2:
+                if debug: print("x.shape[0] == self.batch *2")
+                if self.rev:
+                    contn,contp = context.chunk(2)
+                    ixn,ixp = x.chunk(2)
+                else:
+                    contp,contn =  context.chunk(2)
+                    ixp,ixn = x.chunk(2)#x[0:self.batch,:,:],x[self.batch:,:,:]
+                
+                if conds is not None:contp = torch.cat((contp,conds),1)
+                if unconds is not None:contn =  torch.cat((contn,unconds),1)
+                xp = main_foward(self, module, ixp,contp,mask,additional_tokens,n_times_crossframe_attn_in_self,contokens)
+                xn = main_foward(self, module, ixn,contn,mask,additional_tokens,n_times_crossframe_attn_in_self,untokens)
+                #print(conds,contokens,unconds,untokens)
+            
+                out = torch.cat([xn,xp]) if self.rev else torch.cat([xp,xn])
+                return out
+
+            elif latent is not None:
+                if debug:print("latent is not None")
+                if latent:
+                    conds = conds if conds is not None else None
+                else:
+                    conds = unconds if unconds is not None else None
+
+                if conds is not None:context = torch.cat([context,conds],1)
+                tokens = contokens if contokens is not None else untokens
+
+                out = main_foward(self, module, x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
+                return out
+
+            else:
+                print("else")
+                if debug: print(context.shape[1] , self.conlen,self.unlen)
+                tokens = []
+                concon = counter(self.isxl)
+                if debug: print(concon)
+                if context.shape[1] == self.conlen * 77 and concon:
+                    if conds is not None:
+                        context = torch.cat([context,conds],1)
+                        tokens = contokens
+                elif context.shape[1] == self.unlen * 77 and concon:
+                    if unconds is not None:
+                        context = torch.cat([context,unconds],1)
+                        tokens = untokens
+                out = main_foward(self, module, x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
+                return out
+        if self.enable_rp_latent:
+            if len(self.conds) - 1 >= self.latenti:
+                out = sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[self.latenti],self.contokens[self.latenti],None,None ,latent = True)
+                self.latenti += 1
+            else:
+                out = sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,None,None,self.unconds[0],self.untokens[0], latent = False)
+                self.latenti = 0
+            return out
+        else:
+            #print(self.conds,self.unconds)
+            if self.conds is not None and self.unconds is not None and len(self.conds) > 0 and len(self.unconds) > 0:
+                return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[0],self.contokens[0],self.unconds[0],self.untokens[0])
+            else:
+                return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,None,None,None,None)
+    return forward
+
+count = 0
+pn = True
+
+def counter(isxl):
+    global count, pn
+    count += 1
+
+    limit = 70 if isxl else 16
+    outpn = pn
+
+    if count == limit:
+        pn = not pn
+        count = 0
+    return outpn
+
+def main_foward(self, module, x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
                 h = module.heads
 
                 q = module.to_q(x)
@@ -230,7 +310,7 @@ def hook_forward(self, module):
                     if tokens:
                         for token in tokens:
                             start = (v.shape[1]//77 - len(tokens)) * 77
-                            if debug: print("start:",start+1,"stop:",start+token)
+                            print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
                             v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
 
                 if atm.exists(mask):
@@ -245,67 +325,6 @@ def hook_forward(self, module):
 
                 out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
                 return module.to_out(out)
-
-            if debug: print("x.shape[0]:",x.shape[0],"batch:",self.batch *2)
-
-            if x.shape[0] == self.batch *2:
-                if self.rev:
-                    contn,contp = context.chunk(2)
-                    ixn,ixp = x.chunk(2)
-                else:
-                    contp,contn =  context.chunk(2)
-                    ixp,ixn = x.chunk(2)#x[0:self.batch,:,:],x[self.batch:,:,:]
-                
-                if conds is not None:contp = torch.cat((contp,conds),1)
-                if unconds is not None:contn =  torch.cat((contn,unconds),1)
-                xp = main_foward(ixp,contp,mask,additional_tokens,n_times_crossframe_attn_in_self,contokens)
-                xn = main_foward(ixn,contn,mask,additional_tokens,n_times_crossframe_attn_in_self,untokens)
-                #print(conds,contokens,unconds,untokens)
-            
-                out = torch.cat([xn,xp]) if self.rev else torch.cat([xp,xn])
-                return out
-
-            elif latent is not None:
-                if latent:
-                    conds = conds if conds is not None else None
-                else:
-                    conds = unconds if unconds is not None else None
-
-                if conds is not None:context = torch.cat([context,conds],1)
-                tokens = contokens if contokens is not None else untokens
-
-                out = main_foward(x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
-                return out
-
-            else:
-                if debug: print(context.shape[1] , self.conlen,self.unlen)
-                tokens = []
-                if context.shape[1] == self.conlen * 77:
-                    if conds is not None:
-                        context = torch.cat([context,conds],1)
-                        tokens = contokens
-                elif context.shape[1] == self.unlen * 77:
-                    if unconds is not None:
-                        context = torch.cat([context,unconds],1)
-                        tokens = untokens
-                out = main_foward(x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
-                return out
-        if self.enable_rp_latent:
-            if len(self.conds) - 1 >= self.latenti:
-                out = sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[self.latenti],self.contokens[self.latenti],None,None ,latent = True)
-                self.latenti += 1
-            else:
-                out = sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,None,None,self.unconds[0],self.untokens[0], latent = False)
-                self.latenti = 0
-            return out
-        else:
-            #print(self.conds,self.unconds)
-            if self.conds is not None and self.unconds is not None:
-                return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[0],self.contokens[0],self.unconds[0],self.untokens[0])
-            else:
-                return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,None,None,None,None)
-    return forward
-
 
 def hook_forwards(self, root_module: torch.nn.Module, remove=False):
     for name, module in root_module.named_modules():
