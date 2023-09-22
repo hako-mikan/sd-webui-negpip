@@ -39,7 +39,6 @@ class Script(modules.scripts.Script):
         return [active]
 
     def process_batch(self, p, active,**kwargs):
-        print("NegPIPtest",active)
         self.__init__()
         if not active:return
 
@@ -248,7 +247,7 @@ def hook_forward(self, module):
                 return out
 
             else:
-                print("else")
+                #print("else")
                 if debug: print(context.shape[1] , self.conlen,self.unlen)
                 tokens = []
                 concon = counter(self.isxl)
