@@ -3,6 +3,18 @@ English | [日本語](README_jp.md) | [中文](README_cn.md)
 
 Extension for Stable Diffusion web-ui enables negative prompt in prompt
 
+## For users of ADetailer/ADetailerとの併用について/关于与ADetailer的同时使用  
+In the Web-UI, go to Settings > ADetailer.  
+Add ",negpip" to the end of the text box labeled "Script names to apply to ADetailer (separated by comma)"  
+Click "Apply Settings.  
+
+Web-UIで、Settings > ADetailerに移動してください。  
+「Script names to apply to ADetailer (separated by comma)」と書かれたテキストボックスの末尾に「,negpip」を追加し、Apply Settings  
+
+在Web-UI中，前往“Settings” > “ADetailer”。  
+在标有"Script names to apply to ADetailer (separated by comma)"”的文本框末尾添加“,negpip”。  
+点击“Apply Settings”。  
+
 Update 2023.09.05.2000(JST)
 - Prompt Edittingに対応
 - Regional Prompterに対応(最新版のRegional Prompterが必要)
