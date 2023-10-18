@@ -1,6 +1,8 @@
+from cProfile import label
 import gradio as gr
 import torch
 import re
+import json
 import ldm.modules.attention as atm
 import modules.ui
 import modules
@@ -11,6 +13,18 @@ from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser
 
 debug = False
 debug_p = False
+
+NEGPIP_T = "customscript/negpip.py/txt2img/Active/value"
+NEGPIP_I = "customscript/negpip.py/img2img/Active/value"
+CONFIG = "ui-config.json"
+
+with open(CONFIG, 'r') as json_file:
+    ui_config = json.load(json_file)
+
+startup_t = ui_config[NEGPIP_T] if NEGPIP_T in ui_config else None
+startup_i = ui_config[NEGPIP_I] if NEGPIP_I in ui_config else None
+active_t = "Active" if startup_t else "Not Active"
+active_i = "Active" if startup_i else "Not Active"
 
 minusgetter = r'\(([^(:)]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
 
@@ -24,6 +38,8 @@ class Script(modules.scripts.Script):
         self.contokens = []   
         self.untokens = []
 
+        self.ipa = None
+
         self.enable_rp_latent = False
         
     def title(self):
@@ -32,9 +48,36 @@ class Script(modules.scripts.Script):
     def show(self, is_img2img):
         return modules.scripts.AlwaysVisible
 
-    def ui(self, is_img2img):      
-        with gr.Accordion("NegPiP", open=False):
-            active = gr.Checkbox(value=False, label="active",interactive=True,elem_id="cdt-disable")
+    infotext_fields = None
+    paste_field_names = []
+
+    def ui(self, is_img2img):    
+        with gr.Accordion(f"NegPiP : {active_i if is_img2img else active_t}",open = False) as acc:
+            with gr.Row():
+                active = gr.Checkbox(value=False, label="Active",interactive=True)
+                toggle = gr.Button(elem_id="switch_default", value=f"Toggle startup with Active(Now:{startup_i if is_img2img else startup_t})",variant="primary")
+
+        def f_toggle(is_img2img):
+            key = NEGPIP_I if is_img2img else NEGPIP_T
+
+            with open(CONFIG, 'r') as json_file:
+                data = json.load(json_file)
+            data[key] = not data[key]
+
+            with open(CONFIG, 'w') as json_file:
+                json.dump(data, json_file, indent=4) 
+
+            return gr.update(value = f"Toggle startup Active(Now:{data[key]})")
+
+        toggle.click(fn=f_toggle,inputs=[gr.Checkbox(value = is_img2img, visible = False)],outputs=[toggle])
+        active.change(fn=lambda x:gr.update(label = f"NegPiP : {'Active' if x else 'Not Active'}"),inputs=active, outputs=[acc])
+
+        self.infotext_fields = [
+                (active, "NegPiP Active"),
+        ]
+
+        for _,name in self.infotext_fields:
+            self.paste_field_names.append(name)
 
         return [active]
 
@@ -173,6 +216,10 @@ class Script(modules.scripts.Script):
 
         print(f"NegPiP enable, Positive:{self.conds_all[0][0][1][0][2]},Negative:{self.unconds_all[0][0][1][0][2]}")
 
+        p.extra_generation_params.update({
+            "NegPiP Active":active,
+        })
+
     def postprocess(self, p, processed, *args):
         if hasattr(self,"handle"):
             hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
@@ -181,7 +228,6 @@ class Script(modules.scripts.Script):
         self.unconds_all = None
     
     def denoiser_callback(self, params: CFGDenoiserParams):
-        # params.x [batch,ch[4],height,width]
         if debug: print(params.text_cond.shape)
         if self.active:
             self.latenti = 0 
@@ -209,6 +255,8 @@ class Script(modules.scripts.Script):
 
             self.unconds = uncondslist
             self.untokens = untokenslist
+
+from pprint import pprint
 
 def hook_forward(self, module):
     def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
@@ -294,36 +342,39 @@ def counter(isxl):
     return outpn
 
 def main_foward(self, module, x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
-                h = module.heads
+    h = module.heads
 
-                q = module.to_q(x)
+    q = module.to_q(x)
 
-                context = atm.default(context, x)
-                k = module.to_k(context)
-                v = module.to_v(context)
-                if debug: print(h,context.shape,q.shape,k.shape,v.shape)
-                q, k, v = map(lambda t: atm.rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
-                sim = atm.einsum('b i d, b j d -> b i j', q, k) * module.scale
+    context = atm.default(context, x)
+    k = module.to_k(context)
+    v = module.to_v(context)
+    if debug: print(h,context.shape,q.shape,k.shape,v.shape)
+    q, k, v = map(lambda t: atm.rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+    sim = atm.einsum('b i d, b j d -> b i j', q, k) * module.scale
 
-                if self.active:
-                    if tokens:
-                        for token in tokens:
-                            start = (v.shape[1]//77 - len(tokens)) * 77
-                            if debug: print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
-                            v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
+    if self.active:
+        if tokens:
+            for token in tokens:
+                start = (v.shape[1]//77 - len(tokens)) * 77
+                #print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
+                v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
 
-                if atm.exists(mask):
-                    mask = atm.rearrange(mask, 'b ... -> b (...)')
-                    max_neg_value = -torch.finfo(sim.dtype).max
-                    mask = atm.repeat(mask, 'b j -> (b h) () j', h=h)
-                    sim.masked_fill_(~mask, max_neg_value)
+    if atm.exists(mask):
+        mask = atm.rearrange(mask, 'b ... -> b (...)')
+        max_neg_value = -torch.finfo(sim.dtype).max
+        mask = atm.repeat(mask, 'b j -> (b h) () j', h=h)
+        sim.masked_fill_(~mask, max_neg_value)
 
-                attn = sim.softmax(dim=-1)
-                #print(h,context.shape,q.shape,k.shape,v.shape,attn.shape)
-                out = atm.einsum('b i j, b j d -> b i d', attn, v)
+    attn = sim.softmax(dim=-1)
+    #print(h,context.shape,q.shape,k.shape,v.shape,attn.shape)
+    out = atm.einsum('b i j, b j d -> b i d', attn, v)
 
-                out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
-                return module.to_out(out)
+    out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
+
+    return module.to_out(out)
+
+import inspect
 
 def hook_forwards(self, root_module: torch.nn.Module, remove=False):
     for name, module in root_module.named_modules():
