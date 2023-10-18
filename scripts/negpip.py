@@ -309,7 +309,7 @@ def main_foward(self, module, x, context, mask, additional_tokens, n_times_cross
                     if tokens:
                         for token in tokens:
                             start = (v.shape[1]//77 - len(tokens)) * 77
-                            print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
+                            if debug: print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
                             v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
 
                 if atm.exists(mask):
