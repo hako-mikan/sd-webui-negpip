@@ -28,8 +28,8 @@
 ![](https://github.com/hako-mikan/sd-webui-negpip/blob/imgs/sample5.jpg)
 
 ## 在Txt2Img/Img2Img标签中不显示扩展
-在Web-UI中，转到Settings > NegPiP。
-勾选"Hide in Hide in Txt2Img/Img2Img tab"选项。
+在Web-UI中，转到Settings > NegPiP。  
+勾选"Hide in Hide in Txt2Img/Img2Img tab"选项。  
 如果您勾选此选项，Settings中的"Active"将生效。
 
 ## 关于与ADetailer的同时使用
