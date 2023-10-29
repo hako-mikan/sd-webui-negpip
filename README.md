@@ -33,16 +33,17 @@ Therefore, it may be necessary to input `(girl:-1.6)` in the prompt to remove th
 ![](https://github.com/hako-mikan/sd-webui-negpip/blob/imgs/sample5.jpg)
 
 ## Hide this extention in text2img/img2img tab
-In the Web-UI, go to Settings > NegPiP.
-Check the "Hide in Hide in Txt2Img/Img2Img tab" option.
-If you check this, the "Active" in Settings will be effective.
+In the Web-UI, go to Settings > NegPiP.  
+Check the "Hide in Hide in Txt2Img/Img2Img tab" option.  
+If you check this, the "Active" in Settings will be effective.  
 
 ## For users of ADetailer
 In the Web-UI, go to Settings > ADetailer.  
 Add ",negpip" to the end of the text box labeled "Script names to apply to ADetailer (separated by comma)"  
 Click "Apply Settings.  
 
-Update 2023.09.05.2000(JST)
+
+### Update 2023.09.05.2000(JST)
 - Prompt Edittingに対応
 - Regional Prompterに対応(最新版のRegional Prompterが必要)
 - 負の値を入れていないときでも有効化したときに生成結果が変わる問題を修正
