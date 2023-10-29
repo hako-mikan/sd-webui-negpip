@@ -26,3 +26,13 @@
 
 因此，可能有必要在正向咒语中输入`(girl:-1.6)`来削弱 girl。
 ![](https://github.com/hako-mikan/sd-webui-negpip/blob/imgs/sample5.jpg)
+
+## 在Txt2Img/Img2Img标签中不显示扩展
+在Web-UI中，转到Settings > NegPiP。
+勾选"Hide in Hide in Txt2Img/Img2Img tab"选项。
+如果您勾选此选项，Settings中的"Active"将生效。
+
+## 关于与ADetailer的同时使用
+在Web-UI中，前往“Settings” > “ADetailer”。  
+在标有"Script names to apply to ADetailer (separated by comma)"”的文本框末尾添加“,negpip”。  
+点击“Apply Settings”。 

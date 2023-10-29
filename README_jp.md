@@ -24,3 +24,14 @@ Activeにチェックを入れることで有効になります。プロンプ�
 
 なのでプロンプトの方に`(girl:-1.6)`と入れてgirlを消す必要があるんじゃんよ。
 ![](https://github.com/hako-mikan/sd-webui-negpip/blob/imgs/sample5.jpg)
+
+## Txt2Img/Img2Imgタブで拡張を表示しない
+Web-UIで、Settings > NegPiPに移動します。
+"Hide in Hide in Txt2Img/Img2Img tab"のオプションをチェックしてください。
+これをチェックすると、Settingsの"Active"が有効になります。
+
+## ADetailerとの併用について
+Web-UIで、Settings > ADetailerに移動してください。  
+「Script names to apply to ADetailer (separated by comma)」と書かれたテキストボックスの末尾に「,negpip」を追加し、Apply Settings  
+
+
