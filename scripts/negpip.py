@@ -8,10 +8,13 @@ import modules
 from modules import prompt_parser
 
 from modules import shared
-from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser
+from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_settings
 
 debug = False
 debug_p = False
+
+OPT_ACT = "negpip_active"
+OPT_HIDE = "negpip_hide"
 
 NEGPIP_T = "customscript/negpip.py/txt2img/Active/value"
 NEGPIP_I = "customscript/negpip.py/img2img/Active/value"
@@ -24,6 +27,9 @@ startup_t = ui_config[NEGPIP_T] if NEGPIP_T in ui_config else None
 startup_i = ui_config[NEGPIP_I] if NEGPIP_I in ui_config else None
 active_t = "Active" if startup_t else "Not Active"
 active_i = "Active" if startup_i else "Not Active"
+
+opt_active = getattr(shared.opts,OPT_ACT)
+opt_inui = getattr(shared.opts,OPT_HIDE, True)
 
 minusgetter = r'\(([^(:)]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
 
@@ -51,7 +57,7 @@ class Script(modules.scripts.Script):
     paste_field_names = []
 
     def ui(self, is_img2img):    
-        with gr.Accordion(f"NegPiP : {active_i if is_img2img else active_t}",open = False) as acc:
+        with gr.Accordion(f"NegPiP : {active_i if is_img2img else active_t}",open = False, visible = not opt_inui) as acc:
             with gr.Row():
                 active = gr.Checkbox(value=False, label="Active",interactive=True)
                 toggle = gr.Button(elem_id="switch_default", value=f"Toggle startup with Active(Now:{startup_i if is_img2img else startup_t})",variant="primary")
@@ -82,7 +88,8 @@ class Script(modules.scripts.Script):
 
     def process_batch(self, p, active,**kwargs):
         self.__init__()
-        if not active:return
+        if getattr(shared.opts,OPT_HIDE, False) and not getattr(shared.opts,OPT_ACT, False): return
+        elif not active: return
 
         self.rpscript = None
         #get infomation of regponal prompter
@@ -400,3 +407,16 @@ class SdConditioning(list):
         self.is_negative_prompt = is_negative_prompt or getattr(copy_from, 'is_negative_prompt', False)
         self.width = width or getattr(copy_from, 'width', None)
         self.height = height or getattr(copy_from, 'height', None)
+
+def ext_on_ui_settings():
+    # [setting_name], [default], [label], [component(blank is checkbox)], [component_args]debug_level_choices = []
+    negpip_options = [
+        (OPT_HIDE, False, "Hide in Txt2Img/Img2Img tab(Reload UI requried)"),
+        (OPT_ACT, True, "Active(Effective when Hide is Checked)",),
+    ]
+    section = ('negpip', "NegPiP")
+
+    for cur_setting_name, *option_info in negpip_options:
+        shared.opts.add_option(cur_setting_name, shared.OptionInfo(*option_info, section=section))
+
+on_ui_settings(ext_on_ui_settings)
