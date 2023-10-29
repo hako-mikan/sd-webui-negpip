@@ -411,7 +411,7 @@ class SdConditioning(list):
 def ext_on_ui_settings():
     # [setting_name], [default], [label], [component(blank is checkbox)], [component_args]debug_level_choices = []
     negpip_options = [
-        (OPT_HIDE, False, "Hide in Txt2Img/Img2Img tab(Reload UI requried)"),
+        (OPT_HIDE, False, "Hide in Txt2Img/Img2Img tab(Reload UI required)"),
         (OPT_ACT, True, "Active(Effective when Hide is Checked)",),
     ]
     section = ('negpip', "NegPiP")
