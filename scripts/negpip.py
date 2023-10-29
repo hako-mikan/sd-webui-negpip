@@ -28,8 +28,8 @@ startup_i = ui_config[NEGPIP_I] if NEGPIP_I in ui_config else None
 active_t = "Active" if startup_t else "Not Active"
 active_i = "Active" if startup_i else "Not Active"
 
-opt_active = getattr(shared.opts,OPT_ACT)
-opt_inui = getattr(shared.opts,OPT_HIDE, True)
+opt_active = getattr(shared.opts,OPT_ACT, True)
+opt_hideui = getattr(shared.opts,OPT_HIDE, False)
 
 minusgetter = r'\(([^(:)]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
 
@@ -57,7 +57,7 @@ class Script(modules.scripts.Script):
     paste_field_names = []
 
     def ui(self, is_img2img):    
-        with gr.Accordion(f"NegPiP : {active_i if is_img2img else active_t}",open = False, visible = not opt_inui) as acc:
+        with gr.Accordion(f"NegPiP : {active_i if is_img2img else active_t}",open = False, visible = not opt_hideui) as acc:
             with gr.Row():
                 active = gr.Checkbox(value=False, label="Active",interactive=True)
                 toggle = gr.Button(elem_id="switch_default", value=f"Toggle startup with Active(Now:{startup_i if is_img2img else startup_t})",variant="primary")
