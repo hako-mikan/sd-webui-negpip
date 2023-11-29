@@ -20,7 +20,7 @@ NEGPIP_T = "customscript/negpip.py/txt2img/Active/value"
 NEGPIP_I = "customscript/negpip.py/img2img/Active/value"
 CONFIG = shared.cmd_opts.ui_config_file
 
-with open(CONFIG, 'r') as json_file:
+with open(CONFIG, 'r', encoding="utf-8") as json_file:
     ui_config = json.load(json_file)
 
 startup_t = ui_config[NEGPIP_T] if NEGPIP_T in ui_config else None
