@@ -1,5 +1,9 @@
 # NegPiP - Negative Prompt in Prompt
-English | [日本語](README_jp.md) | [中文](README_cn.md)
+[<img src="https://img.shields.io/badge/lang-Egnlish-blue.svg?style=plastic" height="25" />](readme.md)
+[<img src="https://img.shields.io/badge/言語-日本語-green.svg?style=plastic" height="25" />](readme_ja.md)
+[<img src="https://img.shields.io/badge/语言-中文-red.svg?style=plastic" height="25" />](readme_ch.md)
+[<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
+
 
 Extension for Stable Diffusion web-ui enables negative prompt in prompt
 
@@ -8,7 +12,7 @@ Extension for Stable Diffusion web-ui enables negative prompt in prompt
 
 ### [For users of ADetailer](#for-users-of-adetailer)/[ADetailerとの併用について](README_jp.md#adetailerとの併用について)/[关于与ADetailer的同时使用](README_cn.md#关于与adetailer的同时使用)
 
-# Summary
+# Overview
 This extension enhances the stable diffusion web-ui prompts and cross-attention, allowing for the use of prompts with negative effects within regular prompts and prompts with positive effects within negative prompts. Typically, unwanted elements are placed in negative prompts, but negative prompts may not always have a significant impact in calculations. With this extension, it becomes possible to use negative prompts with effects comparable to regular prompts. This enables stronger effects even for words that might have collapsed when their values were increased too much in negative prompts before, by incorporating negative effects into the prompts.
 
 # Instructions
