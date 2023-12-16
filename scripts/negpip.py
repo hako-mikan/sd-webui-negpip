@@ -60,17 +60,16 @@ class Script(modules.scripts.Script):
         with gr.Accordion(f"NegPiP : {active_i if is_img2img else active_t}",open = False, visible = not opt_hideui) as acc:
             with gr.Row():
                 active = gr.Checkbox(value=False, label="Active",interactive=True)
-                m = gr.Slider(label="Strength", minimum=-10, maximum=10, value=0.0, step=0.1)
                 toggle = gr.Button(elem_id="switch_default", value=f"Toggle startup with Active(Now:{startup_i if is_img2img else startup_t})",variant="primary")
 
         def f_toggle(is_img2img):
             key = NEGPIP_I if is_img2img else NEGPIP_T
 
-            with open(CONFIG, 'r',encoding="utf-8") as json_file:
+            with open(CONFIG, 'r', encoding="utf-8") as json_file:
                 data = json.load(json_file)
             data[key] = not data[key]
 
-            with open(CONFIG, 'w',encoding="utf-8") as json_file:
+            with open(CONFIG, 'w', encoding="utf-8") as json_file:
                 json.dump(data, json_file, indent=4) 
 
             return gr.update(value = f"Toggle startup Active(Now:{data[key]})")
@@ -85,9 +84,9 @@ class Script(modules.scripts.Script):
         for _,name in self.infotext_fields:
             self.paste_field_names.append(name)
 
-        return [active,m]
+        return [active]
 
-    def process_batch(self, p, active,m,**kwargs):
+    def process_batch(self, p, active,**kwargs):
         self.__init__()
         if getattr(shared.opts,OPT_HIDE, False) and not getattr(shared.opts,OPT_ACT, False): return
         elif not active: return
@@ -102,8 +101,6 @@ class Script(modules.scripts.Script):
         self.active = active
         self.batch = p.batch_size
         self.isxl = hasattr(shared.sd_model,"conditioner")
-
-        self.m = m
         
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
 
@@ -367,7 +364,7 @@ def main_foward(self, module, x, context, mask, additional_tokens, n_times_cross
             for token in tokens:
                 start = (v.shape[1]//77 - len(tokens)) * 77
                 #print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
-                v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] * self.m
+                v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
 
     if atm.exists(mask):
         mask = atm.rearrange(mask, 'b ... -> b (...)')
