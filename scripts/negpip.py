@@ -13,6 +13,12 @@ from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_s
 debug = False
 debug_p = False
 
+try:
+    from ldm_patched.modules import model_management
+    forge = True
+except:
+    forge = False
+
 OPT_ACT = "negpip_active"
 OPT_HIDE = "negpip_hide"
 
@@ -109,12 +115,10 @@ class Script(modules.scripts.Script):
         self.isxl = hasattr(shared.sd_model,"conditioner")
         
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
-
+        if forge: self.rev = not self.rev
 
         tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
 
-        if debug_p:print(scheduled_p)
-        if debug_p:print(scheduled_np)
 
         def getshedulednegs(scheduled,prompts):
             output = []
@@ -291,8 +295,7 @@ def unload(self,p):
         del self.handle
 
 def hook_forward(self, module):
-    
-    def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
+    def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0, value = None):
         if debug: print(" x.shape:",x.shape,"context.shape:",context.shape,"self.contokens",self.contokens,"self.untokens",self.untokens)
         
         def sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,conds,contokens,unconds,untokens, latent = None):
@@ -394,15 +397,20 @@ def counter(isxl):
 
 def main_foward(self, module, x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
     h = module.heads
-
+    context = context.to(x.dtype)
     q = module.to_q(x)
 
     context = atm.default(context, x)
     k = module.to_k(context)
     v = module.to_v(context)
     if debug: print(h,context.shape,q.shape,k.shape,v.shape)
+
+    _, _, dim_head = q.shape
+    dim_head //= h
+    scale = dim_head ** -0.5
+
     q, k, v = map(lambda t: atm.rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
-    sim = atm.einsum('b i d, b j d -> b i j', q, k) * module.scale
+    sim = atm.einsum('b i d, b j d -> b i j', q, k) * scale
 
     if self.active:
         if tokens:
