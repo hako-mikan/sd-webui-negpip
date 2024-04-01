@@ -34,6 +34,17 @@ Web-UIで、Settings > NegPiPに移動します。
 "Hide in Hide in Txt2Img/Img2Img tab"のオプションをチェックしてください。  
 これをチェックすると、Settingsの"Active"が有効になります。
 
+## APIで有効化する
+スクリプトの指定を以下のように記述してください。
+
+```
+  "prompt": "green hair twintail BREAK red blouse BREAK blue skirt",
+	"alwayson_scripts": {
+		"NegPiP": {
+			"args": [True]
+}}
+```
+
 ## ADetailerとの併用について
 Web-UIで、Settings > ADetailerに移動してください。  
 「Script names to apply to ADetailer (separated by comma)」と書かれたテキストボックスの末尾に「,negpip」を追加し、Apply Settings  
