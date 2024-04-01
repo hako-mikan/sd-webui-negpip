@@ -41,11 +41,20 @@ In the Web-UI, go to Settings > NegPiP.
 Check the "Hide in Hide in Txt2Img/Img2Img tab" option.  
 If you check this, the "Active" in Settings will be effective.  
 
+## How to Use via API
+The following format is used when utilizing this extension via the API.
+
+```
+	"alwayson_scripts": {
+		"NegPiP": {
+			"args": [True]
+}}
+```
+
 ## For users of ADetailer
 In the Web-UI, go to Settings > ADetailer.  
 Add ",negpip" to the end of the text box labeled "Script names to apply to ADetailer (separated by comma)"  
 Click "Apply Settings.  
-
 
 ### Update 2023.09.05.2000(JST)
 - Prompt Edittingに対応
