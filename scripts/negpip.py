@@ -265,27 +265,31 @@ class Script(modules.scripts.Script):
 
             condslist = []
             tokenslist = []
-            for step, regions in self.hr_conds_all[0] if self.hrp and self.hr else  self.conds_all[0]:
-                if step >= params.sampling_step + 2:
-                    for region, conds, tokens in regions:
-                        condslist.append(conds)
-                        tokenslist.append(tokens)
-                        if debug: print(f"current:{params.sampling_step + 2},selected:{step}")
-                    break
-            self.conds = condslist
-            self.contokens = tokenslist
+            conds = self.hr_conds_all if self.hrp and self.hr else  self.conds_all
+            if conds is not None:
+                for step, regions in conds[0]:
+                    if step >= params.sampling_step + 2:
+                        for region, conds, tokens in regions:
+                            condslist.append(conds)
+                            tokenslist.append(tokens)
+                            if debug: print(f"current:{params.sampling_step + 2},selected:{step}")
+                        break
+                self.conds = condslist
+                self.contokens = tokenslist
 
             uncondslist = []
             untokenslist = []
-            for step, regions  in self.hr_unconds_all[0] if self.hrn and self.hr else  self.unconds_all[0]:
-                if step >= params.sampling_step + 2:
-                    for region, unconds, untokens in regions:
-                        uncondslist.append(unconds)
-                        untokenslist.append(untokens)
-                        break
+            unconds = self.hr_unconds_all if self.hrn and self.hr else  self.unconds_all
+            if unconds is not None:
+                for step, regions  in unconds[0]:
+                    if step >= params.sampling_step + 2:
+                        for region, unconds, untokens in regions:
+                            uncondslist.append(unconds)
+                            untokenslist.append(untokens)
+                            break
 
-            self.unconds = uncondslist
-            self.untokens = untokenslist
+                self.unconds = uncondslist
+                self.untokens = untokenslist
 
 from pprint import pprint
 
@@ -295,7 +299,7 @@ def unload(self,p):
         del self.handle
 
 def hook_forward(self, module):
-    def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0, value = None):
+    def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0, value = None, transformer_options=None):
         if debug: print(" x.shape:",x.shape,"context.shape:",context.shape,"self.contokens",self.contokens,"self.untokens",self.untokens)
         
         def sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,conds,contokens,unconds,untokens, latent = None):
