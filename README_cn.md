@@ -39,10 +39,9 @@
 ## 通过 API 使用的方法
 通过 API 使用此扩展时，使用以下格式。
 ```
-  "prompt": "green hair twintail BREAK red blouse BREAK blue skirt",
-	"alwayson_scripts": {
-		"Regional Prompter": {
-			"args": [True,False,"Matrix","Vertical","Mask","Prompt","1,1,1","",False,False,False,"Attention",False,"0","0","0",""]
+"alwayson_scripts": {
+	"NegPiP": {
+		"args": [True]
 }}
 ```
 
