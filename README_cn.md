@@ -36,6 +36,16 @@
 勾选"Hide in Hide in Txt2Img/Img2Img tab"选项。  
 如果您勾选此选项，Settings中的"Active"将生效。
 
+## 通过 API 使用的方法
+通过 API 使用此扩展时，使用以下格式。
+```
+  "prompt": "green hair twintail BREAK red blouse BREAK blue skirt",
+	"alwayson_scripts": {
+		"Regional Prompter": {
+			"args": [True,False,"Matrix","Vertical","Mask","Prompt","1,1,1","",False,False,False,"Attention",False,"0","0","0",""]
+}}
+```
+
 ## 关于与ADetailer的同时使用
 在Web-UI中，前往“Settings” > “ADetailer”。  
 在标有"Script names to apply to ADetailer (separated by comma)"”的文本框末尾添加“,negpip”。  
