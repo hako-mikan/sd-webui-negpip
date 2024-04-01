@@ -45,9 +45,9 @@ If you check this, the "Active" in Settings will be effective.
 The following format is used when utilizing this extension via the API.
 
 ```
-	"alwayson_scripts": {
-		"NegPiP": {
-			"args": [True]
+"alwayson_scripts": {
+	"NegPiP": {
+		"args": [True]
 }}
 ```
 
