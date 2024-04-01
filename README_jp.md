@@ -38,10 +38,9 @@ Web-UIで、Settings > NegPiPに移動します。
 スクリプトの指定を以下のように記述してください。
 
 ```
-  "prompt": "green hair twintail BREAK red blouse BREAK blue skirt",
-	"alwayson_scripts": {
-		"NegPiP": {
-			"args": [True]
+"alwayson_scripts": {
+	"NegPiP": {
+		"args": [True]
 }}
 ```
 
