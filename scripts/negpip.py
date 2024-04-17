@@ -176,7 +176,8 @@ class Script(modules.scripts.Script):
             end = None
             for target in targets:
                 input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
-                cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
+                with devices.autocast():
+                    cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                 if start is None: start = cond[0][0].cond[0:1,:] if not self.isxl else cond[0][0].cond["crossattn"][0:1,:]
                 if end is None: end = cond[0][0].cond[-1:,:] if not self.isxl else cond[0][0].cond["crossattn"][-1:,:]
                 token, tokenlen = tokenizer(target[0])
