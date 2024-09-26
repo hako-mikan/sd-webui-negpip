@@ -5,7 +5,8 @@ import json
 import ldm.modules.attention as atm
 import modules.ui
 import modules
-from modules import prompt_parser
+from modules import prompt_parser, devices
+
 
 from modules import shared
 from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_settings
