@@ -2,23 +2,25 @@ import gradio as gr
 import torch
 import re
 import json
-import ldm.modules.attention as atm
+from torch import nn, einsum
+from einops import rearrange, repeat
+
+try:
+    import ldm.modules.attention as atm
+    forge = False
+except:
+    #forge
+    forge = True
+    from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
+
 import modules.ui
 import modules
 from modules import prompt_parser, devices
-
-
 from modules import shared
 from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_settings
 
 debug = False
 debug_p = False
-
-try:
-    from ldm_patched.modules import model_management
-    forge = True
-except:
-    forge = False
 
 OPT_ACT = "negpip_active"
 OPT_HIDE = "negpip_hide"
@@ -118,8 +120,10 @@ class Script(modules.scripts.Script):
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
         if forge: self.rev = not self.rev
 
-        tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
-
+        if forge:
+            tokenizer = p.sd_model.text_processing_engine.tokenize_line
+        else:
+            tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
 
         def getshedulednegs(scheduled,prompts):
             output = []
@@ -244,7 +248,10 @@ class Script(modules.scripts.Script):
         if self.rpscript is not None and hasattr(self.rpscript,"hooked"):already_hooked = self.rpscript.hooked
 
         if not already_hooked:
-            self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
+            if forge:
+                self.handle = hook_forwards(self, p.sd_model.forge_objects.unet.model)
+            else:
+                self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
 
         print(f"NegPiP enable, Positive:{self.conds_all[0][0][1][0][2]},Negative:{self.unconds_all[0][0][1][0][2]}")
 
@@ -297,8 +304,20 @@ from pprint import pprint
 
 def unload(self,p):
     if hasattr(self,"handle"):
-        hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
+        if forge:
+            hook_forwards(self, p.sd_model.forge_objects.unet.model, remove=True)
+        else:
+            hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
         del self.handle
+
+# helper functions from LDM
+def exists(val):
+    return val is not None
+
+def default(val, d):
+    if exists(val):
+        return val
+    return d() if isfunction(d) else d
 
 def hook_forward(self, module):
     def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0, value = None, transformer_options=None):
@@ -406,7 +425,7 @@ def main_foward(self, module, x, context, mask, additional_tokens, n_times_cross
     context = context.to(x.dtype)
     q = module.to_q(x)
 
-    context = atm.default(context, x)
+    context = default(context, x)
     k = module.to_k(context)
     v = module.to_v(context)
     if debug: print(h,context.shape,q.shape,k.shape,v.shape)
@@ -415,8 +434,8 @@ def main_foward(self, module, x, context, mask, additional_tokens, n_times_cross
     dim_head //= h
     scale = dim_head ** -0.5
 
-    q, k, v = map(lambda t: atm.rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
-    sim = atm.einsum('b i d, b j d -> b i j', q, k) * scale
+    q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+    sim = einsum('b i d, b j d -> b i j', q, k) * scale
 
     if self.active:
         if tokens:
@@ -425,17 +444,17 @@ def main_foward(self, module, x, context, mask, additional_tokens, n_times_cross
                 #print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
                 v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
 
-    if atm.exists(mask):
-        mask = atm.rearrange(mask, 'b ... -> b (...)')
+    if exists(mask):
+        mask = rearrange(mask, 'b ... -> b (...)')
         max_neg_value = -torch.finfo(sim.dtype).max
-        mask = atm.repeat(mask, 'b j -> (b h) () j', h=h)
+        mask = repeat(mask, 'b j -> (b h) () j', h=h)
         sim.masked_fill_(~mask, max_neg_value)
 
     attn = sim.softmax(dim=-1)
     #print(h,context.shape,q.shape,k.shape,v.shape,attn.shape)
-    out = atm.einsum('b i j, b j d -> b i d', attn, v)
+    out = einsum('b i j, b j d -> b i d', attn, v)
 
-    out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
+    out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
 
     return module.to_out(out)
 
