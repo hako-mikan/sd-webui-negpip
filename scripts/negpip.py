@@ -18,6 +18,7 @@ import modules
 from modules import prompt_parser, devices
 from modules import shared
 from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_settings
+from modules.ui_components import InputAccordion
 
 debug = False
 debug_p = False
@@ -68,10 +69,8 @@ class Script(modules.scripts.Script):
     paste_field_names = []
 
     def ui(self, is_img2img):    
-        with gr.Accordion(f"NegPiP : {active_i if is_img2img else active_t}",open = False, visible = not opt_hideui) as acc:
-            with gr.Row():
-                active = gr.Checkbox(value=False, label="Active",interactive=True)
-                toggle = gr.Button(elem_id="switch_default", value=f"Toggle startup with Active(Now:{startup_i if is_img2img else startup_t})",variant="primary")
+        with InputAccordion(False, label=self.title()) as active:
+            toggle = gr.Button(elem_id="switch_default", value=f"Toggle startup with Active(Now:{startup_i if is_img2img else startup_t})", variant="primary")
 
         def f_toggle(is_img2img):
             key = NEGPIP_I if is_img2img else NEGPIP_T
@@ -86,7 +85,7 @@ class Script(modules.scripts.Script):
             return gr.update(value = f"Toggle startup Active(Now:{data[key]})")
 
         toggle.click(fn=f_toggle,inputs=[gr.Checkbox(value = is_img2img, visible = False)],outputs=[toggle])
-        active.change(fn=lambda x:gr.update(label = f"NegPiP : {'Active' if x else 'Not Active'}"),inputs=active, outputs=[acc])
+        active.change(fn=lambda x:gr.update(label = f"NegPiP : {'Active' if x else 'Not Active'}"),inputs=active, outputs=[active])
 
         self.infotext_fields = [
                 (active, "NegPiP Active"),
