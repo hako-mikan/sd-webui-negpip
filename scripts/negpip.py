@@ -4,6 +4,7 @@ import re
 import json
 from torch import nn, einsum
 from einops import rearrange, repeat
+from inspect import isfunction
 
 try:
     import ldm.modules.attention as atm
@@ -12,6 +13,7 @@ except:
     #forge
     forge = True
     from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
+    from backend.nn.flux import attention, fp16_fix
 
 import modules.ui
 import modules
@@ -42,6 +44,9 @@ opt_active = getattr(shared.opts,OPT_ACT, True)
 opt_hideui = getattr(shared.opts,OPT_HIDE, False)
 
 minusgetter = r'\(([^(:)]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
+
+COND_KEY_C = "crossattn"
+COND_KEY_V = "vector"
 
 class Script(modules.scripts.Script):   
     def __init__(self):
@@ -121,8 +126,10 @@ class Script(modules.scripts.Script):
 
         if forge:
             tokenizer = p.sd_model.text_processing_engine_l.tokenize_line
+            self.flux = flux = "flux" in str(type(p.sd_model.forge_objects.unet.model.diffusion_model))
         else:
             tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
+            self.flux = flux = False
 
         def getshedulednegs(scheduled,prompts):
             output = []
@@ -174,19 +181,33 @@ class Script(modules.scripts.Script):
         if self.hrp: hr_nip = getshedulednegs(scheduled_hr_p,p.hr_prompts)
         if self.hrn: hr_pin = getshedulednegs(scheduled_hr_np,p.hr_negative_prompts)
 
+        cond_key = COND_KEY_C
+
         def conddealer(targets):
             conds =[]
             start = None
             end = None
+            if flux:
+                for target in targets:
+                    input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                    with devices.autocast():
+                        cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
+                    cond_data = cond[0][0].cond
+                    token, tokenlen = tokenizer(target[0])
+                    conds.append(cond_data[cond_key][0:tokenlen + 1, :]) 
+                conds = torch.cat(conds,0).unsqueeze(0)
+                conds = conds.repeat(self.batch,1,1)
+                return conds, conds.shape[1]
+                
             for target in targets:
                 input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
                 with devices.autocast():
                     cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                 cond_data = cond[0][0].cond
-                if start is None: start = cond_data["crossattn"][0:1, :] if not self.isxl else cond_data["crossattn"][0:1, :]
-                if end is None: end = cond_data["crossattn"][-1:, :] if not self.isxl else cond_data["crossattn"][-1:, :]
+                if start is None: start = cond_data[cond_key][0:1, :] if not self.isxl else cond_data[cond_key][0:1, :]
+                if end is None: end = cond_data[cond_key][-1:, :] if not self.isxl else cond_data[cond_key][-1:, :]
                 token, tokenlen = tokenizer(target[0])
-                conds.append(cond_data["crossattn"][1:tokenlen +2,:] if not self.isxl else cond_data["crossattn"][1:tokenlen +2, :]) 
+                conds.append(cond_data[cond_key][1:tokenlen +2,:] if not self.isxl else cond_data[cond_key][1:tokenlen +2, :]) 
             conds = torch.cat(conds, 0)
 
             conds = torch.split(conds, 75, dim=0)
@@ -249,7 +270,7 @@ class Script(modules.scripts.Script):
 
         if not already_hooked:
             if forge:
-                self.handle = hook_forwards(self, p.sd_model.forge_objects.unet.model)
+                self.handle = hook_forwards_f(self, p.sd_model.forge_objects.unet.model)  if flux else hook_forwards(self, p.sd_model.forge_objects.unet.model) 
             else:
                 self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
 
@@ -299,13 +320,20 @@ class Script(modules.scripts.Script):
 
                 self.unconds = uncondslist
                 self.untokens = untokenslist
+        
+        if self.flux and self.conds:
+            self.orig_tokens = params.text_cond[COND_KEY_C].shape[1]
+            params.text_cond[COND_KEY_C] = torch.cat([params.text_cond[COND_KEY_C],self.conds[0]],1)
 
 from pprint import pprint
 
 def unload(self,p):
     if hasattr(self,"handle"):
         if forge:
-            hook_forwards(self, p.sd_model.forge_objects.unet.model, remove=True)
+            if self.flux:
+                hook_forwards_f(self, p.sd_model.forge_objects.unet.model, remove=True)
+            else:
+                hook_forwards(self, p.sd_model.forge_objects.unet.model, remove=True)
         else:
             hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
         del self.handle
@@ -467,6 +495,18 @@ def hook_forwards(self, root_module: torch.nn.Module, remove=False):
             if remove:
                 del module.forward
 
+def hook_forwards_f(self, root_module: torch.nn.Module, remove=False):
+    for name, module in root_module.named_modules():
+        if "double_blocks" in name and module.__class__.__name__ == "DoubleStreamBlock":
+            module.forward = hook_forward_f_d(self, module)
+            if remove:
+                del module.forward
+
+        if "single_blocks" in name and module.__class__.__name__ == "SingleStreamBlock":
+                    module.forward = hook_forward_f_s(self, module)
+                    if remove:
+                        del module.forward
+
 def resetpcache(p):
     p.cached_c = [None,None]
     p.cached_uc = [None,None]
@@ -506,3 +546,103 @@ def hr_dealer(p):
         p.hr_negative_prompts = None
 
     return bool(p.hr_prompts), bool(p.hr_negative_prompts )
+
+def hook_forward_f_d(self, module):
+    def double_s_forward(img, txt, vec, pe):
+        img_mod1_shift, img_mod1_scale, img_mod1_gate, img_mod2_shift, img_mod2_scale, img_mod2_gate = module.img_mod(vec)
+
+        img_modulated = module.img_norm1(img)
+        img_modulated = (1 + img_mod1_scale) * img_modulated + img_mod1_shift
+        del img_mod1_shift, img_mod1_scale
+        img_qkv = module.img_attn.qkv(img_modulated)
+        del img_modulated
+
+        # img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+        B, L, _ = img_qkv.shape
+        H = module.num_heads
+        D = img_qkv.shape[-1] // (3 * H)
+        img_q, img_k, img_v = img_qkv.view(B, L, 3, H, D).permute(2, 0, 3, 1, 4)
+        del img_qkv
+
+        img_q, img_k = module.img_attn.norm(img_q, img_k, img_v)
+
+        txt_mod1_shift, txt_mod1_scale, txt_mod1_gate, txt_mod2_shift, txt_mod2_scale, txt_mod2_gate = module.txt_mod(vec)
+        del vec
+
+        txt_modulated = module.txt_norm1(txt)
+
+        txt_modulated = (1 + txt_mod1_scale) * txt_modulated + txt_mod1_shift
+        
+        del txt_mod1_shift, txt_mod1_scale
+        txt_qkv = module.txt_attn.qkv(txt_modulated)
+        del txt_modulated
+
+        B, L, _ = txt_qkv.shape
+        txt_q, txt_k, txt_v = txt_qkv.view(B, L, 3, H, D).permute(2, 0, 3, 1, 4)
+        del txt_qkv
+
+        if self.contokens:
+            txt_v[:,:,self.orig_tokens:self.orig_tokens + self.contokens[0],:] = -txt_v[:,:,self.orig_tokens:self.orig_tokens + self.contokens[0],:] 
+
+        txt_q, txt_k = module.txt_attn.norm(txt_q, txt_k, txt_v)
+
+        q = torch.cat((txt_q, img_q), dim=2)
+        del txt_q, img_q
+        k = torch.cat((txt_k, img_k), dim=2)
+        del txt_k, img_k
+        v = torch.cat((txt_v, img_v), dim=2)
+        del txt_v, img_v
+
+        attn = attention(q, k, v, pe=pe)
+        del pe, q, k, v
+        txt_attn, img_attn = attn[:, :txt.shape[1]], attn[:, txt.shape[1]:]
+
+        del attn
+
+        img = img + img_mod1_gate * module.img_attn.proj(img_attn)
+        del img_attn, img_mod1_gate
+        img = img + img_mod2_gate * module.img_mlp((1 + img_mod2_scale) * module.img_norm2(img) + img_mod2_shift)
+        del img_mod2_gate, img_mod2_scale, img_mod2_shift
+
+        txt = txt + txt_mod1_gate * module.txt_attn.proj(txt_attn)
+        del txt_attn, txt_mod1_gate
+        txt = txt + txt_mod2_gate * module.txt_mlp((1 + txt_mod2_scale) * module.txt_norm2(txt) + txt_mod2_shift)
+        del txt_mod2_gate, txt_mod2_scale, txt_mod2_shift
+
+        txt = fp16_fix(txt)
+
+        return img, txt
+    
+    return double_s_forward
+
+
+def hook_forward_f_s(self, module):
+    def single_s_forward(x, vec, pe):
+            mod_shift, mod_scale, mod_gate = module.modulation(vec)
+            del vec
+            x_mod = (1 + mod_scale) * module.pre_norm(x) + mod_shift
+            del mod_shift, mod_scale
+            qkv, mlp = torch.split(module.linear1(x_mod), [3 * module.hidden_size, module.mlp_hidden_dim], dim=-1)
+            del x_mod
+
+            # q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+            qkv = qkv.view(qkv.size(0), qkv.size(1), 3, module.num_heads, module.hidden_size // module.num_heads)
+            q, k, v = qkv.permute(2, 0, 3, 1, 4)
+            del qkv
+            if self.contokens:
+                v[:,:,self.orig_tokens:self.orig_tokens + self.contokens[0],:] = -v[:,:,self.orig_tokens:self.orig_tokens + self.contokens[0],:]
+            q, k = module.norm(q, k, v)
+
+            attn = attention(q, k, v, pe=pe)
+            del q, k, v, pe
+            output = module.linear2(torch.cat((attn, module.mlp_act(mlp)), dim=2))
+            del attn, mlp
+
+            x = x + mod_gate * output
+            del mod_gate, output
+
+            x = fp16_fix(x)
+
+            return x
+    
+    return single_s_forward
