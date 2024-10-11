@@ -125,7 +125,10 @@ class Script(modules.scripts.Script):
         if forge: self.rev = not self.rev
 
         if forge:
-            tokenizer = p.sd_model.text_processing_engine_l.tokenize_line
+            if hasattr(p.sd_model, "text_processing_engine_l"):
+                tokenizer = p.sd_model.text_processing_engine_l.tokenize_line
+            else:
+                tokenizer = p.sd_model.text_processing_engine.tokenize_line
             self.flux = flux = "flux" in str(type(p.sd_model.forge_objects.unet.model.diffusion_model))
         else:
             tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
@@ -204,10 +207,10 @@ class Script(modules.scripts.Script):
                 with devices.autocast():
                     cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                 cond_data = cond[0][0].cond
-                if start is None: start = cond_data[cond_key][0:1, :] if not self.isxl else cond_data[cond_key][0:1, :]
-                if end is None: end = cond_data[cond_key][-1:, :] if not self.isxl else cond_data[cond_key][-1:, :]
+                if start is None: start = cond_data[0:1, :] if not self.isxl else cond_data[cond_key][0:1, :]
+                if end is None: end = cond_data[-1:, :] if not self.isxl else cond_data[cond_key][-1:, :]
                 token, tokenlen = tokenizer(target[0])
-                conds.append(cond_data[cond_key][1:tokenlen +2,:] if not self.isxl else cond_data[cond_key][1:tokenlen +2, :]) 
+                conds.append(cond_data[1:tokenlen +2,:] if not self.isxl else cond_data[cond_key][1:tokenlen +2, :]) 
             conds = torch.cat(conds, 0)
 
             conds = torch.split(conds, 75, dim=0)
