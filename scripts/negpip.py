@@ -119,7 +119,17 @@ class Script(modules.scripts.Script):
 
         self.active = active
         self.batch = p.batch_size
-        self.isxl = hasattr(shared.sd_model,"conditioner")
+        # old call, hasattr(shared.sd_model,"conditioner"), no longer works on forge backend, but forge backend provides its own way to do this.
+        self.isxl = p.sd_model.is_sdxl
+        
+        # if you want to change other things to be more mnemonic to the current backend, here's the pprint calls i used to figure all this out in my initial port.
+        # lllyasviel should really document this stuff. it's a nice backend! but he hasn't told any of us how to use it.
+        #pprint(dir(p))
+        #pprint(dir(p.sd_model))
+        #pprint(dir(p.sd_model.forge_objects.unet))
+        #pprint(dir(p.sd_model.forge_objects.clip))
+        #pprint(dir(p.sd_model.forge_objects.clip.tokenizer))
+        #pprint(p.sd_model.is_sdxl)
         
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
         if forge: self.rev = not self.rev
