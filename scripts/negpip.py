@@ -82,7 +82,7 @@ class Script(modules.scripts.Script):
 
             with open(CONFIG, 'r', encoding="utf-8") as json_file:
                 data = json.load(json_file)
-            data[key] = not data[key]
+            data[key] = not data.get(key, False)
 
             with open(CONFIG, 'w', encoding="utf-8") as json_file:
                 json.dump(data, json_file, indent=4) 
