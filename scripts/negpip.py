@@ -15,12 +15,15 @@ except:
     from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
     from backend.nn.flux import attention, fp16_fix
 
+import torch.nn.functional as F
 import modules.ui
 import modules
 from modules import prompt_parser, devices
 from modules import shared
 from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_settings
 from modules.ui_components import InputAccordion
+from diffusers.utils.deprecation_utils import deprecate
+from diffusers.models.attention_processor import Attention as attn_m
 
 debug = False
 debug_p = False
@@ -223,16 +226,16 @@ class Script(modules.scripts.Script):
                 conds.append(cond_data[1:tokenlen +2,:] if not self.isxl else cond_data[cond_key][1:tokenlen +2, :]) 
             conds = torch.cat(conds, 0)
 
-            conds = torch.split(conds, 75, dim=0)
-            condsout = []
-            condcount = []
-            for cond in conds:
-                condcount.append(cond.shape[0])
-                repeat = 0 if cond.shape[0] == 75 else 75 - cond.shape[0]
-                cond = torch.cat((start,cond,end.repeat(repeat + 1,1)),0)
-                condsout.append(cond)
-            condout = torch.cat(condsout,0).unsqueeze(0)
-            return condout.repeat(self.batch,1,1), condcount
+            # conds = torch.split(conds, 75, dim=0)
+            # condsout = []
+            # condcount = []
+            # for cond in conds:
+            #     condcount.append(cond.shape[0])
+            #     repeat = 0 if cond.shape[0] == 75 else 75 - cond.shape[0]
+            #     cond = torch.cat((start,cond,end.repeat(repeat + 1,1)),0)
+            #     condsout.append(cond)
+            conds = conds.unsqueeze(0)
+            return conds.repeat(self.batch,1,1), conds.shape[1]
 
         def calcconds(targetlist):
             outconds = []
@@ -361,10 +364,10 @@ def default(val, d):
     return d() if isfunction(d) else d
 
 def hook_forward(self, module):
-    def forward(x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0, value = None, transformer_options=None):
+    def forward(x, context=None, mask=None, value=None, additional_tokens=None, *args, **kwargs):
         if debug: print(" x.shape:",x.shape,"context.shape:",context.shape,"self.contokens",self.contokens,"self.untokens",self.untokens)
         
-        def sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,conds,contokens,unconds,untokens, latent = None):
+        def sub_forward(x, context, mask, additional_tokens, conds,contokens,unconds,untokens, latent = None):
             if debug: print(" x.shape[0]:",x.shape[0],"batch:",self.batch *2)
             
             if x.shape[0] == self.batch *2:
@@ -385,8 +388,9 @@ def hook_forward(self, module):
                     if contn.shape[0] != unconds.shape[0]:
                         unconds = unconds.expand(contn.shape[0],-1,-1)
                     contn =  torch.cat((contn,unconds),1)
-                xp = main_foward(self, module, ixp,contp,mask,additional_tokens,n_times_crossframe_attn_in_self,contokens)
-                xn = main_foward(self, module, ixn,contn,mask,additional_tokens,n_times_crossframe_attn_in_self,untokens)
+                
+                xp = main_forward(self, module, ixp,contp,value,mask,additional_tokens,contokens,args,kwargs)
+                xn = main_forward(self, module, ixn,contn,value,mask,additional_tokens,untokens,args,kwargs)
             
                 out = torch.cat([xn,xp]) if self.rev else torch.cat([xp,xn])
                 return out
@@ -404,7 +408,7 @@ def hook_forward(self, module):
                 
                 tokens = contokens if contokens is not None else untokens
 
-                out = main_foward(self, module, x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
+                out = main_forward(self, module, x,context,value,mask,additional_tokens,tokens,args,kwargs)
                 return out
 
             else:
@@ -427,22 +431,22 @@ def hook_forward(self, module):
                             unconds = unconds.expand(context.shape[0],-1,-1)
                         context = torch.cat([context,unconds],1)
                         tokens = untokens
-                out = main_foward(self, module, x,context,mask,additional_tokens,n_times_crossframe_attn_in_self,tokens)
+                out = main_forward(self, module, x,context,value,mask,additional_tokens,tokens,args,kwargs)
                 return out
 
         if self.enable_rp_latent:
             if len(self.conds) - 1 >= self.latenti:
-                out = sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[self.latenti],self.contokens[self.latenti],None,None ,latent = True)
+                out = sub_forward(x, context, mask, additional_tokens, self.conds[self.latenti],self.contokens[self.latenti],None,None ,latent = True)
                 self.latenti += 1
             else:
-                out = sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,None,None,self.unconds[0],self.untokens[0], latent = False)
+                out = sub_forward(x, context, mask, additional_tokens, None,None,self.unconds[0],self.untokens[0], latent = False)
                 self.latenti = 0
             return out
         else:
             if self.conds is not None and self.unconds is not None and len(self.conds) > 0 and len(self.unconds) > 0:
-                return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,self.conds[0],self.contokens[0],self.unconds[0],self.untokens[0])
+                return sub_forward(x, context, mask, additional_tokens, self.conds[0],self.contokens[0],self.unconds[0],self.untokens[0])
             else:
-                return sub_forward(x, context, mask, additional_tokens, n_times_crossframe_attn_in_self,None,None,None,None)
+                return sub_forward(x, context, mask, additional_tokens, None,None,None,None)
     
     return forward
 
@@ -461,7 +465,7 @@ def counter(isxl):
         count = 0
     return outpn
 
-def main_foward(self, module, x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
+def main_forward2(self, module, x, context, mask, additional_tokens, tokens, args, kwargs):
     h = module.heads
     context = context.to(x.dtype)
     q = module.to_q(x)
@@ -499,7 +503,43 @@ def main_foward(self, module, x, context, mask, additional_tokens, n_times_cross
 
     return module.to_out(out)
 
-import inspect
+def main_forward(self, attn, x, context, value = None ,mask = None, temb = None, tokens = [], args = None, kwargs = None):
+        q = attn.to_q(x)
+        context = context.to(x.dtype)
+        context = default(context, x)
+        k = attn.to_k(context)
+        if value is not None:
+            v = attn.to_v(value)
+            del value
+        else:
+            v = attn.to_v(context)
+
+        if self.active:
+            if tokens:
+                print(tokens, v.shape)
+                #print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
+                v[:,-tokens:,:] = -v[:,-tokens:,:] 
+
+        out = attention_function(q, k, v, attn.heads, mask)
+        return attn.to_out(out)
+    
+
+def attention_function(q, k, v, heads, mask=None, attn_precision=None, skip_reshape=False):
+    if skip_reshape:
+        b, _, _, dim_head = q.shape
+    else:
+        b, _, dim_head = q.shape
+        dim_head //= heads
+        q, k, v = map(
+            lambda t: t.view(b, -1, heads, dim_head).transpose(1, 2),
+            (q, k, v),
+        )
+
+    out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
+    out = (
+        out.transpose(1, 2).reshape(b, -1, heads * dim_head)
+    )
+    return out
 
 def hook_forwards(self, root_module: torch.nn.Module, remove=False):
     for name, module in root_module.named_modules():
