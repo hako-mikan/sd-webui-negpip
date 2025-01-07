@@ -516,7 +516,7 @@ def main_forward(self, attn, x, context, value = None ,mask = None, temb = None,
 
         if self.active:
             if tokens:
-                print(tokens, v.shape)
+                #print(tokens, v.shape)
                 #print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
                 v[:,-tokens:,:] = -v[:,-tokens:,:] 
 
