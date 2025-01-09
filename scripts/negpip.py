@@ -22,8 +22,6 @@ from modules import prompt_parser, devices
 from modules import shared
 from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_settings
 from modules.ui_components import InputAccordion
-from diffusers.utils.deprecation_utils import deprecate
-from diffusers.models.attention_processor import Attention as attn_m
 
 debug = False
 debug_p = False
