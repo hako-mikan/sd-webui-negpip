@@ -5,6 +5,7 @@ import json
 from torch import nn, einsum
 from einops import rearrange, repeat
 from inspect import isfunction
+from modules.ui import versions_html
 
 try:
     import ldm.modules.attention as atm
@@ -14,6 +15,8 @@ except:
     forge = True
     from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
     from backend.nn.flux import attention, fp16_fix
+
+reforge = "reForge" in versions_html()
 
 import torch.nn.functional as F
 import modules.ui
@@ -133,7 +136,7 @@ class Script(modules.scripts.Script):
         #pprint(p.sd_model.is_sdxl)
         
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
-        if forge: self.rev = not self.rev
+        if forge or reforge: self.rev =  not self.rev 
 
         if forge:
             if hasattr(p.sd_model, "text_processing_engine_l"):
