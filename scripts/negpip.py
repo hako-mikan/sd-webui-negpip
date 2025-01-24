@@ -6,6 +6,8 @@ from torch import nn, einsum
 from einops import rearrange, repeat
 from inspect import isfunction
 from modules.ui import versions_html
+from packaging import version
+from functools import wraps
 
 try:
     import ldm.modules.attention as atm
@@ -24,7 +26,6 @@ import modules
 from modules import prompt_parser, devices
 from modules import shared
 from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_settings
-from modules.ui_components import InputAccordion
 
 debug = False
 debug_p = False
@@ -94,7 +95,6 @@ class Script(modules.scripts.Script):
             return gr.update(value = f"Toggle startup Active(Now:{data[key]})")
 
         toggle.click(fn=f_toggle,inputs=[gr.Checkbox(value = is_img2img, visible = False)],outputs=[toggle])
-        active.change(fn=lambda x:gr.update(label = f"NegPiP : {'Active' if x else 'Not Active'}"),inputs=active, outputs=[active])
 
         self.infotext_fields = [
                 (active, "NegPiP Active"),
@@ -700,3 +700,64 @@ def hook_forward_f_s(self, module):
             return x
     
     return single_s_forward
+
+class InputAccordionImpl(gr.Checkbox):
+    webui_do_not_create_gradio_pyi_thank_you = True
+    global_index = 2244096 + 2 #NegPiP
+
+    @wraps(gr.Checkbox.__init__)
+    def __init__(self, value=None, setup=False, **kwargs):
+        if not setup:
+            super().__init__(value=value, **kwargs)
+            return
+
+        self.accordion_id = kwargs.get('elem_id')
+        if self.accordion_id is None:
+            self.accordion_id = f"input-accordion-m-{InputAccordionImpl.global_index}"
+            InputAccordionImpl.global_index += 1
+
+        kwargs_checkbox = {
+            **kwargs,
+            "elem_id": f"{self.accordion_id}-checkbox",
+            "visible": False,
+        }
+        super().__init__(value=value, **kwargs_checkbox)
+        self.change(fn=None, _js='function(checked){ inputAccordionChecked("' + self.accordion_id + '", checked); }', inputs=[self])
+
+        kwargs_accordion = {
+            **kwargs,
+            "elem_id": self.accordion_id,
+            "label": kwargs.get('label', 'Accordion'),
+            "elem_classes": ['input-accordion-m'],
+            "open": False,
+        }
+
+        self.accordion = gr.Accordion(**kwargs_accordion)
+
+    def extra(self):
+        return gr.Column(elem_id=self.accordion_id + '-extra', elem_classes='input-accordion-extra', min_width=0)
+
+    def __enter__(self):
+        self.accordion.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.accordion.__exit__(exc_type, exc_val, exc_tb)
+
+    def get_block_name(self):
+        return "checkbox"
+
+def InputAccordion(value=None, **kwargs):
+    return InputAccordionImpl(value=value, setup=True, **kwargs)
+
+# Check for Gradio version 4; see Forge architecture rework
+IS_GRADIO_4 = version.parse(gr.__version__) >= version.parse("4.0.0")
+# check if Forge or auto1111 pure; extremely hacky
+
+# Forge patches
+
+# See discussion at, class versus instance __module__
+# https://github.com/LEv145/--sd-webui-ar-plus/issues/24
+# Hack for Forge with Gradio 4.0; see `get_component_class_id` in `venv/lib/site-packages/gradio/components/base.py`
+if IS_GRADIO_4:
+    InputAccordionImpl.__module__ = "modules.ui_components"
