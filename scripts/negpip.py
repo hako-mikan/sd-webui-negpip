@@ -9,14 +9,18 @@ from modules.ui import versions_html
 from packaging import version
 from functools import wraps
 
+classic = forge = reforge = False
 try:
     import ldm.modules.attention as atm
     forge = False
 except:
     #forge
-    forge = True
-    from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
-    from backend.nn.flux import attention, fp16_fix
+    try:
+        from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
+        from backend.nn.flux import attention, fp16_fix
+        forge = True
+    except:
+        classic = True
 
 reforge = "reForge" in versions_html()
 
@@ -136,7 +140,7 @@ class Script(modules.scripts.Script):
         #pprint(p.sd_model.is_sdxl)
         
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
-        if forge or reforge: self.rev =  not self.rev 
+        if forge or reforge or classic: self.rev =  not self.rev 
 
         if forge:
             if hasattr(p.sd_model, "text_processing_engine_l"):
@@ -301,9 +305,9 @@ class Script(modules.scripts.Script):
         unload(self,p)
         self.conds_all = None
         self.unconds_all = None
-    
+       
     def denoiser_callback(self, params: CFGDenoiserParams):
-        if debug: print(params.text_cond.shape)
+        if debug: print("denoiser_callback",params.sampling_step, params.text_cond.shape)
         if self.active:
             if self.x is None: self.x = params.x.shape
             if self.x != params.x.shape: self.hr = True
@@ -315,6 +319,7 @@ class Script(modules.scripts.Script):
             conds = self.hr_conds_all if self.hrp and self.hr else  self.conds_all
             if conds is not None:
                 for step, regions in conds[0]:
+                    #print(" ", step,params.sampling_step)
                     if step >= params.sampling_step + 2:
                         for region, conds, tokens in regions:
                             condslist.append(conds)
@@ -337,6 +342,10 @@ class Script(modules.scripts.Script):
 
                 self.unconds = uncondslist
                 self.untokens = untokenslist
+                
+            global pn, count
+            pn = False if forge or reforge or classic else True
+            count = 0
         
         if self.flux and self.conds:
             self.orig_tokens = params.text_cond[COND_KEY_C].shape[1]
@@ -518,7 +527,7 @@ def main_forward(self, attn, x, context, value = None ,mask = None, temb = None,
         if self.active:
             if tokens:
                 #print(tokens, v.shape)
-                #print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
+                #print("v.shape:",v.shape,"start:",tokens+1)
                 v[:,-tokens:,:] = -v[:,-tokens:,:] 
 
         out = attention_function(q, k, v, attn.heads, mask)
