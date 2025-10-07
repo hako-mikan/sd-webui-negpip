@@ -344,7 +344,8 @@ class Script(modules.scripts.Script):
                 self.untokens = untokenslist
                 
             global pn, count
-            pn = False if forge or reforge or classic else True
+            #pn = False if forge or reforge or classic else True
+            pn = True
             count = 0
         
         if self.flux and self.conds:
