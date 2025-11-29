@@ -143,14 +143,20 @@ class Script(modules.scripts.Script):
         if forge or reforge or classic: self.rev =  not self.rev 
 
         if forge:
-            if hasattr(p.sd_model, "text_processing_engine_l"):
+            if type(p.sd_model).__name__ == "ZImage":
+                tokenizer = p.sd_model.text_processing_engine_gemma.tokenize_line
+                self.modeltype = modeltype = "ZImage"
+                input = SdConditioning([""], width=p.width, height=p.height)
+                p.sd_model.text_processing_engine_gemma(input)
+            elif hasattr(p.sd_model, "text_processing_engine_l"):
                 tokenizer = p.sd_model.text_processing_engine_l.tokenize_line
             else:
                 tokenizer = p.sd_model.text_processing_engine.tokenize_line
-            self.flux = flux = "flux" in str(type(p.sd_model.forge_objects.unet.model.diffusion_model))
+            if "flux" in str(type(p.sd_model.forge_objects.unet.model.diffusion_model)):
+                self.modeltype = modeltype = "flux"  
         else:
             tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
-            self.flux = flux = False
+            self.modeltype = modeltype = "SD"
 
         def getshedulednegs(scheduled,prompts):
             output = []
@@ -189,6 +195,7 @@ class Script(modules.scripts.Script):
                     stepout.append([step,padtextweight])
                 output.append(stepout)
             return output
+      
         
         scheduled_p = prompt_parser.get_learned_conditioning_prompt_schedules(p.prompts,p.steps)
         scheduled_np = prompt_parser.get_learned_conditioning_prompt_schedules(p.negative_prompts,p.steps)
@@ -208,7 +215,7 @@ class Script(modules.scripts.Script):
             conds =[]
             start = None
             end = None
-            if flux:
+            if modeltype == "flux":
                 for target in targets:
                     input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
                     with devices.autocast():
@@ -216,6 +223,18 @@ class Script(modules.scripts.Script):
                     cond_data = cond[0][0].cond
                     token, tokenlen = tokenizer(target[0])
                     conds.append(cond_data[cond_key][0:tokenlen + 1, :]) 
+                conds = torch.cat(conds,0).unsqueeze(0)
+                conds = conds.repeat(self.batch,1,1)
+                return conds, conds.shape[1]
+               
+            if modeltype == "ZImage":
+                for target in targets:
+                    input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                    with devices.autocast():
+                        cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
+                    cond_data = cond[0][0].cond
+                    conds.append(cond_data[3:-5, :])
+                    token, tokenlen = tokenizer(target[0])
                 conds = torch.cat(conds,0).unsqueeze(0)
                 conds = conds.repeat(self.batch,1,1)
                 return conds, conds.shape[1]
@@ -291,7 +310,12 @@ class Script(modules.scripts.Script):
 
         if not already_hooked:
             if forge:
-                self.handle = hook_forwards_f(self, p.sd_model.forge_objects.unet.model)  if flux else hook_forwards(self, p.sd_model.forge_objects.unet.model) 
+                if modeltype == "flux":
+                    self.handle = hook_forwards_f(self, p.sd_model.forge_objects.unet.model) 
+                elif modeltype == "ZImage":
+                    self.handle = hook_forwards_z(self, p.sd_model.forge_objects.unet.model) 
+                else:
+                    self.handle = hook_forwards(self, p.sd_model.forge_objects.unet.model) 
             else:
                 self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
 
@@ -348,17 +372,23 @@ class Script(modules.scripts.Script):
             pn = True
             count = 0
         
-        if self.flux and self.conds:
+        if self.modeltype == "flux" and self.conds:
             self.orig_tokens = params.text_cond[COND_KEY_C].shape[1]
             params.text_cond[COND_KEY_C] = torch.cat([params.text_cond[COND_KEY_C],self.conds[0]],1)
 
+        if self.modeltype == "ZImage" and self.conds:
+            self.orig_tokens = params.text_cond.shape[1]
+            params.text_cond = torch.cat([params.text_cond[:,:-5,:],self.conds[0],params.text_cond[:,-5:,:]],1)
+            
 from pprint import pprint
 
 def unload(self,p):
     if hasattr(self,"handle"):
         if forge:
-            if self.flux:
-                hook_forwards_f(self, p.sd_model.forge_objects.unet.model, remove=True)
+            if self.modeltype == "flux":
+                hook_forwards_f(self, p.sd_model.forge_objects.unet.model, remove=True)   
+            elif self.modeltype == "ZImage":
+                hook_forwards_z(self, p.sd_model.forge_objects.unet.model, remove=True)
             else:
                 hook_forwards(self, p.sd_model.forge_objects.unet.model, remove=True)
         else:
@@ -571,6 +601,14 @@ def hook_forwards_f(self, root_module: torch.nn.Module, remove=False):
                     if remove:
                         del module.forward
 
+def hook_forwards_z(self, root_module: torch.nn.Module, remove=False):
+    for name, module in root_module.named_modules():
+        #print(name,module.__class__.__name__)
+        if "layers" in name and module.__class__.__name__ == "JointAttention":
+            module.forward = hook_forward_f_z(self, module)
+            if remove:
+                del module.forward
+
 def resetpcache(p):
     p.cached_c = [None,None]
     p.cached_uc = [None,None]
@@ -710,6 +748,55 @@ def hook_forward_f_s(self, module):
             return x
     
     return single_s_forward
+
+def hook_forward_f_z(self, module):
+    from backend.nn.lumina import JointAttention
+    from backend.memory_management import xformers_enabled
+    if xformers_enabled():
+        from backend.attention import attention_xformers as attention_function_z
+    else:
+        from backend.attention import attention_pytorch as attention_function_z
+
+    hook_self = self
+
+    def joint_atten_forward(x: torch.Tensor, x_mask: torch.Tensor, freqs_cis: torch.Tensor, transformer_options={}) -> torch.Tensor:
+        bsz, seqlen, _ = x.shape
+
+        xq, xk, xv = torch.split(
+            module.qkv(x),
+            [
+                module.n_local_heads * module.head_dim,
+                module.n_local_kv_heads * module.head_dim,
+                module.n_local_kv_heads * module.head_dim,
+            ],
+            dim=-1,
+        )
+
+        xq = xq.view(bsz, seqlen, module.n_local_heads, module.head_dim)
+        xk = xk.view(bsz, seqlen, module.n_local_kv_heads, module.head_dim)
+        xv = xv.view(bsz, seqlen, module.n_local_kv_heads, module.head_dim)
+
+        if hook_self.contokens:
+            start_idx = hook_self.orig_tokens-5
+            end_idx = start_idx + hook_self.conds[0].shape[1]
+            xv[:, start_idx:end_idx, :, :] = -xv[:, start_idx:end_idx, :, :]
+
+        xq = module.q_norm(xq)
+        xk = module.k_norm(xk)
+
+        xq = JointAttention.apply_rotary_emb(xq, freqs_cis=freqs_cis)
+        xk = JointAttention.apply_rotary_emb(xk, freqs_cis=freqs_cis)
+
+        n_rep = module.n_local_heads // module.n_local_kv_heads
+        if n_rep >= 1:
+            xk = xk.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
+            xv = xv.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
+        
+        output = attention_function_z(xq.movedim(1, 2), xk.movedim(1, 2), xv.movedim(1, 2), module.n_local_heads, x_mask, skip_reshape=True, transformer_options=transformer_options)
+
+        return module.out(output)
+    
+    return joint_atten_forward
 
 class InputAccordionImpl(gr.Checkbox):
     webui_do_not_create_gradio_pyi_thank_you = True
