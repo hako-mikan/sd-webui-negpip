@@ -7,6 +7,9 @@
 
 Extension for Stable Diffusion web-ui enables negative prompt in prompt
 
+## Update 2025.11.30.0100(JST)
+- support Z-Image in Forge NEO
+
 ## Update 2023.10.29.2100(JST)
 - Option to hide this extention in t2i/i2i tab [Detail](#hide-this-extention-in-text2imgimg2img-tab),[詳細](README_jp.md#txt2imgimg2imgタブで拡張を表示しない),[解释](README_cn.md#在txt2imgimg2img标签中不显示扩展)
 
@@ -68,3 +71,4 @@ Click "Apply Settings.
 - 支持Prompt Editting
 - 支持区Regional Prompter(需要最新版Regional Prompter)
 - 修复了即使没有输入负值时激活也会改变生成结果的问题
+
