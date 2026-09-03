@@ -131,6 +131,8 @@ class Script(modules.scripts.Script):
         self.ipa = None
 
         self.enable_rp_latent = False
+
+        self.hooked_modules = []
         
     def title(self):
         return "NegPiP"
@@ -398,19 +400,8 @@ class Script(modules.scripts.Script):
         if self.rpscript is not None and hasattr(self.rpscript,"hooked"):already_hooked = self.rpscript.hooked
 
         if not already_hooked:
-            if forge:
-                if modeltype == "flux":
-                    self.handle = hook_forwards_f(self, p.sd_model.forge_objects.unet.model) 
-                elif modeltype == "ZImage":
-                    self.handle = hook_forwards_z(self, p.sd_model.forge_objects.unet.model) 
-                elif modeltype == "Anima":
-                    self.handle = hook_forwards_a(self, p.sd_model.forge_objects.unet.model)
-                elif modeltype == "Krea":
-                    self.handle = hook_forwards_k(self, p.sd_model.forge_objects.unet.model)
-                else:
-                    self.handle = hook_forwards(self, p.sd_model.forge_objects.unet.model) 
-            else:
-                self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
+            self.handle = True
+            hook_target(self, current_diffusion_model(p.sd_model))
 
         print(f"NegPiP enable, Positive:{self.conds_all[0][0][1][0][2]},Negative:{self.unconds_all[0][0][1][0][2]}")
 
@@ -428,6 +419,11 @@ class Script(modules.scripts.Script):
         if self.active:
             if self.x is None: self.x = params.x.shape
             if self.x != params.x.shape: self.hr = True
+
+            # the refiner and the hires pass may load a different checkpoint in the
+            # middle of a generation, the new model has to be hooked as well (#64)
+            if getattr(self, "handle", None) is not None:
+                hook_target(self, current_diffusion_model())
 
             self.latenti = 0 
 
@@ -492,21 +488,44 @@ class Script(modules.scripts.Script):
             
 from pprint import pprint
 
+def current_diffusion_model(sd_model=None):
+    """the module NegPiP has to hook for the model that is loaded right now"""
+    sd_model = shared.sd_model if sd_model is None else sd_model
+    if sd_model is None:
+        return None
+    if forge:
+        return sd_model.forge_objects.unet.model
+    return getattr(getattr(sd_model, "model", None), "diffusion_model", None)
+
+def hook_model(self, module, remove=False):
+    if module is None:
+        return
+    if self.modeltype == "flux":
+        hook_forwards_f(self, module, remove=remove)
+    elif self.modeltype == "ZImage":
+        hook_forwards_z(self, module, remove=remove)
+    elif self.modeltype == "Anima":
+        hook_forwards_a(self, module, remove=remove)
+    elif self.modeltype == "Krea":
+        hook_forwards_k(self, module, remove=remove)
+    else:
+        hook_forwards(self, module, remove=remove)
+
+def hook_target(self, module):
+    hooked = getattr(self, "hooked_modules", None)
+    if module is None or hooked is None:
+        return
+    if any(module is already for already in hooked):
+        return
+    if debug_arch and hooked: print("NegPiP: the model was swapped, hooking the new one")
+    hook_model(self, module)
+    hooked.append(module)
+
 def unload(self,p):
     if hasattr(self,"handle"):
-        if forge:
-            if self.modeltype == "flux":
-                hook_forwards_f(self, p.sd_model.forge_objects.unet.model, remove=True)   
-            elif self.modeltype == "ZImage":
-                hook_forwards_z(self, p.sd_model.forge_objects.unet.model, remove=True)
-            elif self.modeltype == "Anima":
-                hook_forwards_a(self, p.sd_model.forge_objects.unet.model, remove=True)
-            elif self.modeltype == "Krea":
-                hook_forwards_k(self, p.sd_model.forge_objects.unet.model, remove=True)
-            else:
-                hook_forwards(self, p.sd_model.forge_objects.unet.model, remove=True)
-        else:
-            hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
+        for module in getattr(self, "hooked_modules", []):
+            hook_model(self, module, remove=True)
+        self.hooked_modules = []
         del self.handle
 
 # helper functions from LDM
