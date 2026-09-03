@@ -54,7 +54,9 @@ active_i = "Active" if startup_i else "Not Active"
 opt_active = getattr(shared.opts,OPT_ACT, True)
 opt_hideui = getattr(shared.opts,OPT_HIDE, False)
 
-minusgetter = r'\(([^(:)]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
+# group 1 is the target text, group 2 the negative weight. Escaped brackets
+# (\( and \)) have to stay part of the target, see issue #68
+minusgetter = r'\(((?:[^(:)\\]|\\.)*):\s*(-\d+(?:\.\d+)?)\s*\)'
 
 COND_KEY_C = "crossattn"
 COND_KEY_V = "vector"
@@ -235,11 +237,10 @@ class Script(modules.scripts.Script):
                         minus_targets = []
                         textweights = []
                         for minusmatch in minusmatches:
-                            minus_targets.append(minusmatch.group().replace("(","").replace(")",""))
-
+                            # take the captured groups, stripping every bracket would also
+                            # remove the escaped ones inside the target
+                            minus_targets.append([minusmatch.group(1), minusmatch.group(2)])
                             prompts[i] = prompts[i].replace(minusmatch.group(),"")
-                        minus_targets = [x.split(":") for x in minus_targets]
-                        #print(minus_targets)
                         for text,weight in minus_targets:
                             weight = float(weight)
                             if text == "BREAK": continue
