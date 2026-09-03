@@ -174,8 +174,11 @@ class Script(modules.scripts.Script):
         self.__init__()
         flag = False
 
-        if getattr(shared.opts,OPT_HIDE, False) and not getattr(shared.opts,OPT_ACT, False): return
-        elif not active: return
+        if getattr(shared.opts,OPT_HIDE, False):
+            # the accordion is hidden, so its checkbox cannot be reached; the setting
+            # decides instead of the (invisible and always default) checkbox
+            active = getattr(shared.opts,OPT_ACT, False)
+        if not active: return
 
         self.rpscript = None
         #get infomation of regponal prompter
@@ -969,7 +972,11 @@ def hook_forwards_k(self, root_module: torch.nn.Module, remove=False):
 
 class InputAccordionImpl(gr.Checkbox):
     webui_do_not_create_gradio_pyi_thank_you = True
-    global_index = 2244096 + 2 #NegPiP
+    # the element id has to be unique across every extension that ships this
+    # accordion. A shared counter with a per extension offset collides as soon as
+    # the tab is built more than once (txt2img, img2img, ...), and the javascript
+    # then wires the checkbox of one extension to the accordion of another one
+    global_index = 0
 
     @wraps(gr.Checkbox.__init__)
     def __init__(self, value=None, setup=False, **kwargs):
@@ -979,7 +986,7 @@ class InputAccordionImpl(gr.Checkbox):
 
         self.accordion_id = kwargs.get('elem_id')
         if self.accordion_id is None:
-            self.accordion_id = f"input-accordion-m-{InputAccordionImpl.global_index}"
+            self.accordion_id = f"input-accordion-m-negpip-{InputAccordionImpl.global_index}"
             InputAccordionImpl.global_index += 1
 
         kwargs_checkbox = {
