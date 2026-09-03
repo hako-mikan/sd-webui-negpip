@@ -78,6 +78,12 @@ TEMPLATE_TAIL = 5
 # "Original" renormalises the mean afterwards and cancels most of the weight
 LLM_MODELS = ("ZImage", "Anima", "Krea")
 
+# Z-Image keeps the chat template in its conditioning, and the first token of the
+# Qwen3 hidden states is an attention sink with a norm about 25x the others. A
+# single added token is diluted by it, so the weight needs a gain to land on the
+# same scale as the other architectures
+MODEL_GAIN = {"ZImage": 10.0}
+
 def get_text_engine(sd_model):
     """Return the text processing engine of a Forge/Forge-Neo model.
 
@@ -901,7 +907,8 @@ def negpip_strength(hook_self, length, device, dtype):
     strength = getattr(hook_self, "strength", None)
     if not strength or len(strength) != length:
         return None
-    return torch.tensor(strength, device=device, dtype=dtype).view(1, -1, 1)
+    gain = MODEL_GAIN.get(hook_self.modeltype, 1.0)
+    return torch.tensor(strength, device=device, dtype=dtype).view(1, -1, 1) * gain
 
 def hook_value_projection(self, module, attr, remove=False, value_dim=None, name=""):
     """Wrap the value projection of an attention module.
@@ -952,13 +959,12 @@ def hook_value_projection(self, module, attr, remove=False, value_dim=None, name
 def hook_forwards_z(self, root_module: torch.nn.Module, remove=False):
     # Z-Image (NextDiT): caption tokens come first in the joint sequence, q, k and v
     # share a single linear so only the trailing value slice is flipped.
-    # ``context_refiner`` runs over the caption alone and mixes the NegPiP tokens into
-    # the other caption tokens, so it has to be flipped as well. ``noise_refiner`` only
-    # sees image tokens and must be left alone.
+    # Only the joint ``layers`` are hooked. Flipping inside ``context_refiner`` as well
+    # subtracts the token from its neighbours before the joint attention subtracts it
+    # again, which makes the response non monotonic and reverses it past about -2.
+    # ``noise_refiner`` only sees image tokens and must be left alone.
     for name, module in root_module.named_modules():
-        if module.__class__.__name__ != "JointAttention":
-            continue
-        if "layers" in name or "context_refiner" in name:
+        if "layers" in name and module.__class__.__name__ == "JointAttention":
             hook_value_projection(self, module, "qkv", remove, value_dim=module.n_local_kv_heads * module.head_dim, name=name)
 
 def hook_forwards_a(self, root_module: torch.nn.Module, remove=False):
