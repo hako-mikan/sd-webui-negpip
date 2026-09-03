@@ -7,6 +7,10 @@
 
 Extension for Stable Diffusion web-ui enables negative prompt in prompt
 
+## Update 2026.09.03(JST)
+- support Anima and Krea2 in Forge NEO
+- the weight is now applied on the models with an LLM text encoder (Z-Image, Anima, Krea2), where it was previously almost ignored
+
 ## Update 2025.11.30.0100(JST)
 - support Z-Image in Forge NEO
 
@@ -20,6 +24,9 @@ This extension enhances the stable diffusion web-ui prompts and cross-attention,
 
 # Instructions
 By checking the "Active" box, it will become effective. In the prompt input screen, entering a negative value like `(word:-1)` will give it a negative effect. It also works with negative prompts, in which case it will have a positive effect.
+
+### About the weight
+If nothing seems to change, raise the value. The weight is a strength, not a switch, and how much is needed depends heavily on the model. Values below 1 often do nothing at all, and **with recent XL models a value of 2 or more is frequently required** before the effect becomes visible. Raise it step by step, `-1` -> `-1.5` -> `-2` -> `-3`, until the element disappears. If the image starts to break down before the element goes away, that word is probably not the one producing it; try the word that actually carries the concept instead.
 
 This was created with the prompt "gothic dress". Despite including `(black:1.8)` in the negative prompt, it's still black. It seems impossible to completely eliminate the blackness of word `gothic`.
 
