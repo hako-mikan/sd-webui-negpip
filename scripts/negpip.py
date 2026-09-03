@@ -72,6 +72,12 @@ MODELTYPE_FROM_CLASS = {
 # trailing chat template tokens of the Qwen3 / Qwen3-VL text processing engines
 TEMPLATE_TAIL = 5
 
+# model types whose text encoder is an LLM. Their conditioning is built without
+# emphasis and the weight is applied as a multiplier on the value vectors, see
+# negpip_strength(). Applying it through the emphasis instead does not work:
+# "Original" renormalises the mean afterwards and cancels most of the weight
+LLM_MODELS = ("ZImage", "Anima", "Krea")
+
 def get_text_engine(sd_model):
     """Return the text processing engine of a Forge/Forge-Neo model.
 
@@ -296,7 +302,7 @@ class Script(modules.scripts.Script):
             if modeltype == "ZImage":
                 strength = []
                 for target in targets:
-                    input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                    input = SdConditioning([f"({target[0]}:1.0)"], width=p.width, height=p.height)
                     with devices.autocast():
                         cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                     cond_data = cond[0][0].cond
@@ -310,7 +316,7 @@ class Script(modules.scripts.Script):
             if modeltype in ("Anima", "Krea"):
                 strength = []
                 for target in targets:
-                    input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                    input = SdConditioning([f"({target[0]}:1.0)"], width=p.width, height=p.height)
                     with devices.autocast():
                         cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                     cond_data = cond[0][0].cond
@@ -481,13 +487,7 @@ class Script(modules.scripts.Script):
                 addcond = addcond.unsqueeze(1)
             self.orig_tokens = text_cond.shape[axis]
             params.text_cond = torch.cat([text_cond, addcond], axis)
-            if debug_arch:
-                _tn = text_cond.reshape(-1, text_cond.shape[-1]).norm(dim=-1)
-                _an = addcond.reshape(-1, addcond.shape[-1]).norm(dim=-1)
-                print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape),
-                      "orig_tokens", self.orig_tokens,
-                      "| cond norm max/mean(nonzero):", float(_tn.max()), float(_tn[_tn > 0].mean()) if (_tn > 0).any() else 0.0,
-                      "| add norm:", [round(float(x), 2) for x in _an[:8]])
+            if debug_arch: print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape), "orig_tokens", self.orig_tokens)
             
 from pprint import pprint
 
@@ -888,13 +888,22 @@ def negpip_range(hook_self):
     return start, start + hook_self.conds[0].shape[1]
 
 def negpip_strength(hook_self, length, device, dtype):
-    """per token multiplier, only ZImage keeps an explicit strength vector"""
-    strength = getattr(hook_self, "strength", None)
-    if hook_self.modeltype == "ZImage" and strength and len(strength) == length:
-        return torch.tensor(strength, device=device, dtype=dtype).view(1, -1, 1)
-    return None
+    """Per token multiplier for the NegPiP tokens.
 
-def hook_value_projection(self, module, attr, remove=False, value_dim=None):
+    On LLM text encoders the conditioning is built with a neutral weight, so the
+    weight from the prompt is applied here: the value vectors are multiplied by the
+    (negative) weight instead of only being flipped. On the CLIP based encoders the
+    weight is carried by the emphasis of the conditioning itself and the value is
+    flipped, which is the original NegPiP behaviour.
+    """
+    if hook_self.modeltype not in LLM_MODELS:
+        return None
+    strength = getattr(hook_self, "strength", None)
+    if not strength or len(strength) != length:
+        return None
+    return torch.tensor(strength, device=device, dtype=dtype).view(1, -1, 1)
+
+def hook_value_projection(self, module, attr, remove=False, value_dim=None, name=""):
     """Wrap the value projection of an attention module.
 
     NegPiP only needs the value vectors of its own tokens flipped. Wrapping the
@@ -919,7 +928,7 @@ def hook_value_projection(self, module, attr, remove=False, value_dim=None):
     original = linear.forward
     linear.negpip_forward = original
     hook_self = self
-    if debug_arch: print("NegPiP/hook:", module.__class__.__name__, attr)
+    if debug_arch: print("NegPiP/hook:", name or module.__class__.__name__, attr)
 
     def forward(x, *args, **kwargs):
         out = original(x, *args, **kwargs)
@@ -950,7 +959,7 @@ def hook_forwards_z(self, root_module: torch.nn.Module, remove=False):
         if module.__class__.__name__ != "JointAttention":
             continue
         if "layers" in name or "context_refiner" in name:
-            hook_value_projection(self, module, "qkv", remove, value_dim=module.n_local_kv_heads * module.head_dim)
+            hook_value_projection(self, module, "qkv", remove, value_dim=module.n_local_kv_heads * module.head_dim, name=name)
 
 def hook_forwards_a(self, root_module: torch.nn.Module, remove=False):
     # Anima: classic cross attention, the NegPiP tokens are appended to the context
@@ -967,7 +976,7 @@ def hook_forwards_k(self, root_module: torch.nn.Module, remove=False):
         if not name.endswith(".attn") or module.__class__.__name__ != "Attention":
             continue
         if (".blocks." in name and "txtfusion" not in name) or "refiner_blocks." in name:
-            hook_value_projection(self, module, "wv", remove)
+            hook_value_projection(self, module, "wv", remove, name=name)
 
 
 class InputAccordionImpl(gr.Checkbox):
