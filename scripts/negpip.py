@@ -1,3 +1,4 @@
+import os
 import gradio as gr
 import torch
 import re
@@ -33,6 +34,7 @@ from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_s
 
 debug = False
 debug_p = False
+debug_arch = os.environ.get("NEGPIP_DEBUG", "") == "1"
 
 OPT_ACT = "negpip_active"
 OPT_HIDE = "negpip_hide"
@@ -56,6 +58,61 @@ minusgetter = r'\(([^(:)]*):\s*-[\d]+(\.[\d]+)?(?:\s*)\)'
 
 COND_KEY_C = "crossattn"
 COND_KEY_V = "vector"
+
+# ---- NegPiP : Forge Neo (new architectures) ----------------------------------
+# maps ForgeDiffusionEngine class name -> NegPiP internal model type
+MODELTYPE_FROM_CLASS = {
+    "ZImage": "ZImage",
+    "Anima": "Anima",
+    "Krea2": "Krea",
+}
+
+# trailing chat template tokens of the Qwen3 / Qwen3-VL text processing engines
+TEMPLATE_TAIL = 5
+
+def get_text_engine(sd_model):
+    """Return the text processing engine of a Forge/Forge-Neo model.
+
+    Forge Neo names the engine after its text encoder (``text_processing_engine_anima``,
+    ``..._qwen``, ``..._gemma`` ...) so a fixed attribute name no longer works.
+    """
+    for name in ("text_processing_engine_l", "text_processing_engine"):
+        engine = getattr(sd_model, name, None)
+        if engine is not None:
+            return engine
+    for name in dir(sd_model):
+        if name.startswith("text_processing_engine"):
+            engine = getattr(sd_model, name, None)
+            if engine is not None:
+                return engine
+    return None
+
+def tokenize_wrapper(engine):
+    """``tokenize_line`` returns ``(chunks, token_count)`` on CLIP based engines but
+    only ``chunks`` on every LLM based engine of Forge Neo. Normalise both."""
+    tokenize_line = engine.tokenize_line
+
+    def tokenize(line):
+        result = tokenize_line(line)
+        if isinstance(result, tuple):
+            return result
+        count = 0
+        for chunk in result:
+            tokens = getattr(chunk, "tokens", None)
+            if tokens is None:
+                tokens = getattr(chunk, "qwen_tokens", None) or getattr(chunk, "t5_tokens", [])
+            count += len(tokens)
+        return result, count
+
+    return tokenize
+
+def trim_padding(cond_data):
+    """Anima pads its conditioning with zeros up to 512 tokens, drop the padding."""
+    valid = torch.nonzero(cond_data.reshape(cond_data.shape[0], -1).abs().sum(dim=-1) > 0)
+    if valid.numel() == 0:
+        return cond_data
+    return cond_data[:int(valid.max()) + 1]
+# ------------------------------------------------------------------------------
 
 class Script(modules.scripts.Script):   
     def __init__(self):
@@ -144,20 +201,19 @@ class Script(modules.scripts.Script):
         self.modeltype = modeltype = "SD"
          
         if forge:
-            if type(p.sd_model).__name__ == "ZImage":
-                tokenizer = p.sd_model.text_processing_engine_gemma.tokenize_line
-                self.modeltype = modeltype = "ZImage"
+            engine = get_text_engine(p.sd_model)
+            modelclass = type(p.sd_model).__name__
+            if modelclass in MODELTYPE_FROM_CLASS:
+                self.modeltype = modeltype = MODELTYPE_FROM_CLASS[modelclass]
+                # warm up / make sure the text encoder is resident before tokenizing
                 input = SdConditioning([""], width=p.width, height=p.height)
-                p.sd_model.text_processing_engine_gemma(input)
-            elif hasattr(p.sd_model, "text_processing_engine_l"):
-                tokenizer = p.sd_model.text_processing_engine_l.tokenize_line
-            else:
-                tokenizer = p.sd_model.text_processing_engine.tokenize_line
+                engine(input)
+            tokenizer = tokenize_wrapper(engine)
             if "flux" in str(type(p.sd_model.forge_objects.unet.model.diffusion_model)):
-                self.modeltype = modeltype = "flux"  
-                
+                self.modeltype = modeltype = "flux"
+
         else:
-            tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
+            tokenizer = tokenize_wrapper(shared.sd_model.conditioner.embedders[0] if self.isxl else shared.sd_model.cond_stage_model)
 
         def getshedulednegs(scheduled,prompts):
             output = []
@@ -245,6 +301,31 @@ class Script(modules.scripts.Script):
                 self.strength = strength
                 return conds, conds.shape[1]
                 
+            if modeltype in ("Anima", "Krea"):
+                strength = []
+                for target in targets:
+                    input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
+                    with devices.autocast():
+                        cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
+                    cond_data = cond[0][0].cond
+                    if modeltype == "Anima":
+                        if cond_data.dim() > 2 and cond_data.shape[0] == 1: cond_data = cond_data[0]
+                        cond_data = trim_padding(cond_data)
+                        # the last token is the T5 end-of-sequence token, it carries a large
+                        # part of the attention mass and must not be negated
+                        if cond_data.shape[0] > 1: cond_data = cond_data[:-1]
+                    else:
+                        # Krea2 keeps the trailing chat template tokens, the leading
+                        # part is already removed by the text processing engine
+                        if cond_data.shape[0] > TEMPLATE_TAIL: cond_data = cond_data[:-TEMPLATE_TAIL]
+                    if debug_arch: print("NegPiP/arch: cond", modeltype, tuple(cond_data.shape))
+                    conds.append(cond_data)
+                    strength.extend([target[1]]*cond_data.shape[0])
+                conds = torch.cat(conds,0).unsqueeze(0)
+                conds = conds.repeat(self.batch,*([1] * (conds.dim() - 1)))
+                self.strength = strength
+                return conds, conds.shape[1]
+
             for target in targets:
                 strength = []
                 input = SdConditioning([f"({target[0]}:{-target[1]})"], width=p.width, height=p.height)
@@ -321,6 +402,10 @@ class Script(modules.scripts.Script):
                     self.handle = hook_forwards_f(self, p.sd_model.forge_objects.unet.model) 
                 elif modeltype == "ZImage":
                     self.handle = hook_forwards_z(self, p.sd_model.forge_objects.unet.model) 
+                elif modeltype == "Anima":
+                    self.handle = hook_forwards_a(self, p.sd_model.forge_objects.unet.model)
+                elif modeltype == "Krea":
+                    self.handle = hook_forwards_k(self, p.sd_model.forge_objects.unet.model)
                 else:
                     self.handle = hook_forwards(self, p.sd_model.forge_objects.unet.model) 
             else:
@@ -386,6 +471,23 @@ class Script(modules.scripts.Script):
         if self.modeltype == "ZImage" and self.conds:
             self.orig_tokens = params.text_cond.shape[1] - 5
             params.text_cond = torch.cat([params.text_cond[:,:-5,:],self.conds[0],params.text_cond[:,-5:,:]],1)
+
+        if self.modeltype in ("Anima", "Krea") and self.conds:
+            text_cond = params.text_cond
+            # Anima: (batch, 1, tokens, dim) / Krea2: (batch, tokens, layers, dim)
+            axis = 1 if self.modeltype == "Krea" else text_cond.dim() - 2
+            addcond = self.conds[0].to(text_cond)
+            while addcond.dim() < text_cond.dim():
+                addcond = addcond.unsqueeze(1)
+            self.orig_tokens = text_cond.shape[axis]
+            params.text_cond = torch.cat([text_cond, addcond], axis)
+            if debug_arch:
+                _tn = text_cond.reshape(-1, text_cond.shape[-1]).norm(dim=-1)
+                _an = addcond.reshape(-1, addcond.shape[-1]).norm(dim=-1)
+                print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape),
+                      "orig_tokens", self.orig_tokens,
+                      "| cond norm max/mean(nonzero):", float(_tn.max()), float(_tn[_tn > 0].mean()) if (_tn > 0).any() else 0.0,
+                      "| add norm:", [round(float(x), 2) for x in _an[:8]])
             
 from pprint import pprint
 
@@ -396,6 +498,10 @@ def unload(self,p):
                 hook_forwards_f(self, p.sd_model.forge_objects.unet.model, remove=True)   
             elif self.modeltype == "ZImage":
                 hook_forwards_z(self, p.sd_model.forge_objects.unet.model, remove=True)
+            elif self.modeltype == "Anima":
+                hook_forwards_a(self, p.sd_model.forge_objects.unet.model, remove=True)
+            elif self.modeltype == "Krea":
+                hook_forwards_k(self, p.sd_model.forge_objects.unet.model, remove=True)
             else:
                 hook_forwards(self, p.sd_model.forge_objects.unet.model, remove=True)
         else:
@@ -608,13 +714,6 @@ def hook_forwards_f(self, root_module: torch.nn.Module, remove=False):
                     if remove:
                         del module.forward
 
-def hook_forwards_z(self, root_module: torch.nn.Module, remove=False):
-    for name, module in root_module.named_modules():
-        if "layers" in name and module.__class__.__name__ == "JointAttention":
-            module.forward = hook_forward_f_z(self, module)
-            if remove:
-                del module.forward
-
 def resetpcache(p):
     p.cached_c = [None,None]
     p.cached_uc = [None,None]
@@ -755,56 +854,98 @@ def hook_forward_f_s(self, module):
     
     return single_s_forward
 
-def hook_forward_f_z(self, module):
-    from backend.nn.lumina import JointAttention
-    from backend.memory_management import xformers_enabled
-    if xformers_enabled():
-        from backend.attention import attention_xformers as attention_function_z
-    else:
-        from backend.attention import attention_pytorch as attention_function_z
 
+def negpip_range(hook_self):
+    """position of the NegPiP tokens inside the (already extended) conditioning"""
+    if not hook_self.active or not hook_self.contokens or not hook_self.conds:
+        return None
+    start = getattr(hook_self, "orig_tokens", None)
+    if start is None:
+        return None
+    return start, start + hook_self.conds[0].shape[1]
+
+def negpip_strength(hook_self, length, device, dtype):
+    """per token multiplier, only ZImage keeps an explicit strength vector"""
+    strength = getattr(hook_self, "strength", None)
+    if hook_self.modeltype == "ZImage" and strength and len(strength) == length:
+        return torch.tensor(strength, device=device, dtype=dtype).view(1, -1, 1)
+    return None
+
+def hook_value_projection(self, module, attr, remove=False, value_dim=None):
+    """Wrap the value projection of an attention module.
+
+    NegPiP only needs the value vectors of its own tokens flipped. Wrapping the
+    ``v`` linear instead of reimplementing ``forward`` keeps the extension
+    independent of how each architecture implements attention, which changes
+    often on Forge Neo. ``value_dim`` is used when q, k and v share one linear.
+    """
+    linear = getattr(module, attr, None)
+    if linear is None:
+        return
+
+    if remove:
+        original = getattr(linear, "negpip_forward", None)
+        if original is not None:
+            linear.forward = original
+            del linear.negpip_forward
+        return
+
+    if hasattr(linear, "negpip_forward"):
+        return
+
+    original = linear.forward
+    linear.negpip_forward = original
     hook_self = self
+    if debug_arch: print("NegPiP/hook:", module.__class__.__name__, attr)
 
-    def joint_atten_forward(x: torch.Tensor, x_mask: torch.Tensor, freqs_cis: torch.Tensor, transformer_options={}) -> torch.Tensor:
-        bsz, seqlen, _ = x.shape
+    def forward(x, *args, **kwargs):
+        out = original(x, *args, **kwargs)
+        span = negpip_range(hook_self)
+        if span is None:
+            return out
+        start, end = span
+        if end > out.shape[-2]:
+            return out
+        target = out[..., start:end, :] if value_dim is None else out[..., start:end, -value_dim:]
+        strength = negpip_strength(hook_self, end - start, out.device, out.dtype)
+        target = target * strength if strength is not None else -target
+        if value_dim is None:
+            out[..., start:end, :] = target
+        else:
+            out[..., start:end, -value_dim:] = target
+        return out
 
-        xq, xk, xv = torch.split(
-            module.qkv(x),
-            [
-                module.n_local_heads * module.head_dim,
-                module.n_local_kv_heads * module.head_dim,
-                module.n_local_kv_heads * module.head_dim,
-            ],
-            dim=-1,
-        )
+    linear.forward = forward
 
-        xq = xq.view(bsz, seqlen, module.n_local_heads, module.head_dim)
-        xk = xk.view(bsz, seqlen, module.n_local_kv_heads, module.head_dim)
-        xv = xv.view(bsz, seqlen, module.n_local_kv_heads, module.head_dim)
+def hook_forwards_z(self, root_module: torch.nn.Module, remove=False):
+    # Z-Image (NextDiT): caption tokens come first in the joint sequence, q, k and v
+    # share a single linear so only the trailing value slice is flipped.
+    # ``context_refiner`` runs over the caption alone and mixes the NegPiP tokens into
+    # the other caption tokens, so it has to be flipped as well. ``noise_refiner`` only
+    # sees image tokens and must be left alone.
+    for name, module in root_module.named_modules():
+        if module.__class__.__name__ != "JointAttention":
+            continue
+        if "layers" in name or "context_refiner" in name:
+            hook_value_projection(self, module, "qkv", remove, value_dim=module.n_local_kv_heads * module.head_dim)
 
-        if hook_self.contokens:
-            start, end = hook_self.orig_tokens, hook_self.orig_tokens + hook_self.conds[0].shape[1]
-            strength_tensor = torch.tensor(hook_self.strength, device=xv.device, dtype=xv.dtype)
-            strength_tensor = strength_tensor.view(1, -1, 1, 1)
-            #print(start,end,strength_tensor)
-            xv[:, start:end, :, :] = xv[:, start:end, :, :]*strength_tensor
+def hook_forwards_a(self, root_module: torch.nn.Module, remove=False):
+    # Anima: classic cross attention, the NegPiP tokens are appended to the context
+    for name, module in root_module.named_modules():
+        if name.endswith("cross_attn") and module.__class__.__name__ == "SelfCrossAttention":
+            hook_value_projection(self, module, "v_proj", remove)
 
-        xq = module.q_norm(xq)
-        xk = module.k_norm(xk)
+def hook_forwards_k(self, root_module: torch.nn.Module, remove=False):
+    # Krea2: single stream DiT, text tokens come first in the joint sequence.
+    # ``txtfusion.refiner_blocks`` attends over the text tokens and mixes the NegPiP
+    # tokens into the prompt, so it is flipped too. ``txtfusion.layerwise_blocks``
+    # attends over the 12 encoder layers instead of tokens and must be left alone.
+    for name, module in root_module.named_modules():
+        if not name.endswith(".attn") or module.__class__.__name__ != "Attention":
+            continue
+        if (".blocks." in name and "txtfusion" not in name) or "refiner_blocks." in name:
+            hook_value_projection(self, module, "wv", remove)
 
-        xq = JointAttention.apply_rotary_emb(xq, freqs_cis=freqs_cis)
-        xk = JointAttention.apply_rotary_emb(xk, freqs_cis=freqs_cis)
-
-        n_rep = module.n_local_heads // module.n_local_kv_heads
-        if n_rep >= 1:
-            xk = xk.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
-            xv = xv.unsqueeze(3).repeat(1, 1, 1, n_rep, 1).flatten(2, 3)
-        
-        output = attention_function_z(xq.movedim(1, 2), xk.movedim(1, 2), xv.movedim(1, 2), module.n_local_heads, x_mask, skip_reshape=True, transformer_options=transformer_options)
-
-        return module.out(output)
-    
-    return joint_atten_forward
 
 class InputAccordionImpl(gr.Checkbox):
     webui_do_not_create_gradio_pyi_thank_you = True
