@@ -7,10 +7,8 @@
 
 Extension for Stable Diffusion web-ui enables negative prompt in prompt
 
-## Update 2026.09.04(JST)
+## Update 2026.09.04.20:00(JST)
 - note that on Krea2 only the sign of the weight has an effect
-
-## Update 2026.09.03(JST)
 - support Anima and Krea2 in Forge NEO
 - the weight is now applied on the models with an LLM text encoder (Z-Image, Anima, Krea2), where it was previously almost ignored
 
