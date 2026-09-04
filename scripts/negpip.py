@@ -79,10 +79,12 @@ TEMPLATE_TAIL = 5
 LLM_MODELS = ("ZImage", "Anima", "Krea")
 
 # Z-Image keeps the chat template in its conditioning, and the first token of the
-# Qwen3 hidden states is an attention sink with a norm about 25x the others. A
-# single added token is diluted by it, so the weight needs a gain to land on the
-# same scale as the other architectures
-MODEL_GAIN = {"ZImage": 10.0}
+# The first Qwen3 hidden state is an attention sink with a norm about 25x the
+# others. A single added token is diluted by it, so the weight needs a gain to
+# land on roughly the same scale as the CLIP based architectures, where -1 is
+# already a visible change. The numbers are matched by eye on one prompt each.
+# Krea2 takes no gain: see the note in the README, only the sign reaches it.
+MODEL_GAIN = {"ZImage": 10.0, "Anima": 5.0}
 
 def get_text_engine(sd_model):
     """Return the text processing engine of a Forge/Forge-Neo model.

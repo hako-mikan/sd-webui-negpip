@@ -7,6 +7,9 @@
 
 Extension for Stable Diffusion web-ui enables negative prompt in prompt
 
+## Update 2026.09.04(JST)
+- note that on Krea2 only the sign of the weight has an effect
+
 ## Update 2026.09.03(JST)
 - support Anima and Krea2 in Forge NEO
 - the weight is now applied on the models with an LLM text encoder (Z-Image, Anima, Krea2), where it was previously almost ignored
@@ -27,6 +30,13 @@ By checking the "Active" box, it will become effective. In the prompt input scre
 
 ### About the weight
 If nothing seems to change, raise the value. The weight is a strength, not a switch, and how much is needed depends heavily on the model. Values below 1 often do nothing at all, and **with recent XL models a value of 2 or more is frequently required** before the effect becomes visible. Raise it step by step, `-1` -> `-1.5` -> `-2` -> `-3`, until the element disappears. If the image starts to break down before the element goes away, that word is probably not the one producing it; try the word that actually carries the concept instead.
+
+On **Krea2 the weight has no effect** and only the sign does: a value of `-0.01`
+and a value of `-10` give the same image. Krea2 is a single stream model, so the
+NegPiP tokens ride in the same residual stream as the image tokens, and every
+block starts with an RMS norm over that stream. Whatever scale is put on the
+value vectors is normalised away again before the next block sees it, leaving
+only the direction. Use it as a switch there.
 
 This was created with the prompt "gothic dress". Despite including `(black:1.8)` in the negative prompt, it's still black. It seems impossible to completely eliminate the blackness of word `gothic`.
 
