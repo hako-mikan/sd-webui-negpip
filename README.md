@@ -14,12 +14,12 @@ Extension for Stable Diffusion web-ui enables negative prompt in prompt
 - with a CFG above 1, the negative prompt is no longer affected when Forge NEO batches it together with the prompt
 - on Z-Image and Krea2 the negative words were encoded with their `(word:1.0)` brackets as plain text since the Forge NEO text encoder update, they are encoded as the word alone again
 
-## Update 2026.09.04(JST)
+## Update 2026.09.04.20:00(JST)
 - note that on Krea2 only the sign of the weight has an effect
-
-## Update 2026.09.03(JST)
 - support Anima and Krea2 in Forge NEO
 - the weight is now applied on the models with an LLM text encoder (Z-Image, Anima, Krea2), where it was previously almost ignored
+- Krea2 及び Animaに対応しました。
+- Krea2 はアーキテクチャの仕様上強度が意味をなさないのでマイナスがついている値なら効果はほとんど変わりません
 
 ## Update 2025.11.30.0100(JST)
 - support Z-Image in Forge NEO
