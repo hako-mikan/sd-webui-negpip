@@ -67,16 +67,22 @@ MODELTYPE_FROM_CLASS = {
     "ZImage": "ZImage",
     "Anima": "Anima",
     "Krea2": "Krea",
+    "MOSSImage": "MOSS",
 }
 
 # trailing chat template tokens of the Qwen3 / Qwen3-VL text processing engines
 TEMPLATE_TAIL = 5
 
+# MOSS-Image wraps the prompt in "<|im_start|>user\n" (3 tokens) and
+# "<|im_end|>\n<|im_start|>assistant\n<think>\n" (7 tokens) and keeps both
+MOSS_HEAD = 3
+MOSS_TAIL = 7
+
 # model types whose text encoder is an LLM. Their conditioning is built without
 # emphasis and the weight is applied as a multiplier on the value vectors, see
 # negpip_strength(). Applying it through the emphasis instead does not work:
 # "Original" renormalises the mean afterwards and cancels most of the weight
-LLM_MODELS = ("ZImage", "Anima", "Krea")
+LLM_MODELS = ("ZImage", "Anima", "Krea", "MOSS")
 
 # Z-Image keeps the chat template in its conditioning, and the first token of the
 # The first Qwen3 hidden state is an attention sink with a norm about 25x the
@@ -84,6 +90,8 @@ LLM_MODELS = ("ZImage", "Anima", "Krea")
 # land on roughly the same scale as the CLIP based architectures, where -1 is
 # already a visible change. The numbers are matched by eye on one prompt each.
 # Krea2 takes no gain: see the note in the README, only the sign reaches it.
+# MOSS-Image takes none either: its weight already acts like on CLIP, -1 removes
+# the target, a few times that changes the whole picture.
 MODEL_GAIN = {"ZImage": 10.0, "Anima": 5.0}
 
 def get_text_engine(sd_model):
@@ -105,8 +113,22 @@ def get_text_engine(sd_model):
 
 def tokenize_wrapper(engine):
     """``tokenize_line`` returns ``(chunks, token_count)`` on CLIP based engines but
-    only ``chunks`` on every LLM based engine of Forge Neo. Normalise both."""
-    tokenize_line = engine.tokenize_line
+    only ``chunks`` on every LLM based engine of Forge Neo. Normalise both.
+
+    Since Forge Neo rewrote its text processing engines (end of September 2026)
+    only the CLIP engine has ``tokenize_line``; the LLM engines have ``tokenize``,
+    which returns the ids, or a (qwen ids, t5 ids) pair on Anima (#73, #74). The
+    count only matters on CLIP, where it decides the 75 token chunks."""
+    tokenize_line = getattr(engine, "tokenize_line", None)
+
+    if tokenize_line is None:
+        def tokenize(line):
+            ids = engine.tokenize(line)
+            if isinstance(ids, tuple):
+                ids = ids[0]
+            return ids, len(ids)
+
+        return tokenize
 
     def tokenize(line):
         result = tokenize_line(line)
@@ -310,7 +332,7 @@ class Script(modules.scripts.Script):
             if modeltype == "ZImage":
                 strength = []
                 for target in targets:
-                    input = SdConditioning([f"({target[0]}:1.0)"], width=p.width, height=p.height)
+                    input = SdConditioning([target[0]], width=p.width, height=p.height)
                     with devices.autocast():
                         cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                     cond_data = cond[0][0].cond
@@ -320,11 +342,26 @@ class Script(modules.scripts.Script):
                 conds = conds.repeat(self.batch,1,1)
                 self.strength = strength
                 return conds, conds.shape[1]
-                
+
+            if modeltype == "MOSS":
+                strength = []
+                for target in targets:
+                    input = SdConditioning([target[0]], width=p.width, height=p.height)
+                    with devices.autocast():
+                        cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
+                    cond_data = cond[0][0].cond[MOSS_HEAD:-MOSS_TAIL]
+                    if debug_arch: print("NegPiP/arch: cond", modeltype, tuple(cond_data.shape))
+                    conds.append(cond_data)
+                    strength.extend([target[1]]*cond_data.shape[0])
+                conds = torch.cat(conds,0).unsqueeze(0)
+                conds = conds.repeat(self.batch,1,1)
+                self.strength = strength
+                return conds, conds.shape[1]
+
             if modeltype in ("Anima", "Krea"):
                 strength = []
                 for target in targets:
-                    input = SdConditioning([f"({target[0]}:1.0)"], width=p.width, height=p.height)
+                    input = SdConditioning([target[0]], width=p.width, height=p.height)
                     with devices.autocast():
                         cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                     cond_data = cond[0][0].cond
@@ -482,20 +519,36 @@ class Script(modules.scripts.Script):
             self.orig_tokens = params.text_cond[COND_KEY_C].shape[1]
             params.text_cond[COND_KEY_C] = torch.cat([params.text_cond[COND_KEY_C],self.conds[0]],1)
 
-        if self.modeltype == "ZImage" and self.conds:
-            self.orig_tokens = params.text_cond.shape[1] - 5
-            params.text_cond = torch.cat([params.text_cond[:,:-5,:],self.conds[0],params.text_cond[:,-5:,:]],1)
+        if self.modeltype in ("ZImage", "MOSS") and self.conds:
+            # both keep the end of the chat template, the tokens go in front of it
+            tail = MOSS_TAIL if self.modeltype == "MOSS" else 5
+            text_cond = params.text_cond
+            addcond = fit_cond(self.conds[0], text_cond, 1)
+            self.orig_tokens = text_cond.shape[1] - tail
+            params.text_cond = torch.cat([text_cond[:,:-tail],addcond,text_cond[:,-tail:]],1)
+            self.cond_len = params.text_cond.shape[1]
+            if debug_arch: print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape), "orig_tokens", self.orig_tokens)
 
         if self.modeltype in ("Anima", "Krea") and self.conds:
             text_cond = params.text_cond
-            # Anima: (batch, 1, tokens, dim) / Krea2: (batch, tokens, layers, dim)
+            # Anima: tokens on the second to last axis / Krea2: (batch, tokens, layers, dim)
             axis = 1 if self.modeltype == "Krea" else text_cond.dim() - 2
-            addcond = self.conds[0].to(text_cond)
-            while addcond.dim() < text_cond.dim():
-                addcond = addcond.unsqueeze(1)
+            addcond = fit_cond(self.conds[0], text_cond, axis)
             self.orig_tokens = text_cond.shape[axis]
             params.text_cond = torch.cat([text_cond, addcond], axis)
+            self.cond_len = params.text_cond.shape[axis]
             if debug_arch: print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape), "orig_tokens", self.orig_tokens)
+
+def fit_cond(conds, text_cond, axis):
+    """The NegPiP tokens shaped like ``text_cond`` on every axis but the token one.
+
+    ``conds`` holds the same tokens repeated once per image of the batch. Where
+    the batch sits in ``text_cond`` differs between the models and the Forge Neo
+    versions - Anima has put it on the second axis (#71) - so take one copy and
+    broadcast it over whatever comes before the token axis."""
+    one = conds[0].to(text_cond)
+    pre = text_cond.shape[:axis]
+    return one.reshape((1,) * len(pre) + tuple(one.shape)).expand(*pre, *one.shape)
             
 from pprint import pprint
 
@@ -511,6 +564,8 @@ def current_diffusion_model(sd_model=None):
 def hook_model(self, module, remove=False):
     if module is None:
         return
+    if self.modeltype in LLM_MODELS:
+        hook_call_state(self, module, remove=remove)
     if self.modeltype == "flux":
         hook_forwards_f(self, module, remove=remove)
     elif self.modeltype == "ZImage":
@@ -519,8 +574,49 @@ def hook_model(self, module, remove=False):
         hook_forwards_a(self, module, remove=remove)
     elif self.modeltype == "Krea":
         hook_forwards_k(self, module, remove=remove)
+    elif self.modeltype == "MOSS":
+        hook_forwards_m(self, module, remove=remove)
     else:
         hook_forwards(self, module, remove=remove)
+
+def hook_call_state(self, root_module, remove=False):
+    """Note, for every call of the diffusion model, which rows of the batch are
+    the positive prompt and how long the text is.
+
+    Forge Neo runs the positive and the negative prompt in one batch whenever it
+    can, and when their lengths differ it repeats the shorter one up to a common
+    multiple (ConditionCrossAttn.concat). The NegPiP tokens only exist in the
+    positive prompt, so without this they were also flipped in the negative rows,
+    or in whatever happened to sit at their position there."""
+    model = getattr(root_module, "diffusion_model", root_module)
+    if remove:
+        handle = getattr(model, "negpip_state_handle", None)
+        if handle is not None:
+            handle.remove()
+            del model.negpip_state_handle
+        self.call_rows = self.call_txtlen = None
+        return
+    if hasattr(model, "negpip_state_handle"):
+        return
+
+    hook_self = self
+
+    def pre_hook(module, args, kwargs):
+        context = kwargs.get("context", args[2] if len(args) > 2 else None)
+        options = kwargs.get("transformer_options", {}) or {}
+        flags = options.get("cond_or_uncond")
+        batch = args[0].shape[0] if args else None
+        hook_self.call_rows = None
+        if flags and batch and batch % len(flags) == 0:
+            rows = torch.tensor([flag == 0 for flag in flags], dtype=torch.bool)
+            hook_self.call_rows = rows.repeat_interleave(batch // len(flags))
+        hook_self.call_txtlen = None
+        if torch.is_tensor(context):
+            axis = context.dim() - 2 if hook_self.modeltype == "Anima" else 1
+            hook_self.call_txtlen = context.shape[axis]
+        if debug_arch: print("NegPiP/call: flags", flags, "text", hook_self.call_txtlen, "cond", getattr(hook_self, "cond_len", None))
+
+    model.negpip_state_handle = model.register_forward_pre_hook(pre_hook, with_kwargs=True)
 
 def hook_target(self, module):
     hooked = getattr(self, "hooked_modules", None)
@@ -895,6 +991,43 @@ def negpip_range(hook_self):
         return None
     return start, start + hook_self.conds[0].shape[1]
 
+def negpip_spans(hook_self, length, text_last=False):
+    """Where the NegPiP tokens are in a sequence of ``length`` tokens.
+
+    The text is the start of the sequence on most models and its end on
+    MOSS-Image (``text_last``). When Forge Neo repeated the positive prompt to
+    batch it with a longer negative one, every copy carries the tokens."""
+    span = negpip_range(hook_self)
+    if span is None:
+        return []
+    start, end = span
+    txtlen = getattr(hook_self, "call_txtlen", None)
+    cond_len = getattr(hook_self, "cond_len", None)
+
+    copies = 1
+    if txtlen and cond_len and txtlen != cond_len:
+        if txtlen < cond_len or txtlen % cond_len:
+            # a text the positive prompt is not in, the negative prompt on its own
+            return []
+        copies = txtlen // cond_len
+
+    base = 0
+    if text_last:
+        if not txtlen or txtlen > length:
+            return []
+        base = length - txtlen
+
+    step = cond_len or 0
+    spans = [(base + m * step + start, base + m * step + end) for m in range(copies)]
+    return [s for s in spans if s[1] <= length]
+
+def negpip_rows(hook_self, batch):
+    """The rows of this call that hold the positive prompt, or None for all."""
+    rows = getattr(hook_self, "call_rows", None)
+    if rows is None or rows.shape[0] != batch or bool(rows.all()):
+        return None
+    return rows.nonzero().flatten()
+
 def negpip_strength(hook_self, length, device, dtype):
     """Per token multiplier for the NegPiP tokens.
 
@@ -912,13 +1045,14 @@ def negpip_strength(hook_self, length, device, dtype):
     gain = MODEL_GAIN.get(hook_self.modeltype, 1.0)
     return torch.tensor(strength, device=device, dtype=dtype).view(1, -1, 1) * gain
 
-def hook_value_projection(self, module, attr, remove=False, value_dim=None, name=""):
+def hook_value_projection(self, module, attr, remove=False, value_dim=None, name="", text_last=False):
     """Wrap the value projection of an attention module.
 
     NegPiP only needs the value vectors of its own tokens flipped. Wrapping the
     ``v`` linear instead of reimplementing ``forward`` keeps the extension
     independent of how each architecture implements attention, which changes
-    often on Forge Neo. ``value_dim`` is used when q, k and v share one linear.
+    often on Forge Neo. ``value_dim`` is used when q, k and v share one linear,
+    ``text_last`` when the text follows the image in the sequence.
     """
     linear = getattr(module, attr, None)
     if linear is None:
@@ -941,19 +1075,23 @@ def hook_value_projection(self, module, attr, remove=False, value_dim=None, name
 
     def forward(x, *args, **kwargs):
         out = original(x, *args, **kwargs)
-        span = negpip_range(hook_self)
-        if span is None:
+        spans = negpip_spans(hook_self, out.shape[-2], text_last)
+        if not spans:
             return out
-        start, end = span
-        if end > out.shape[-2]:
-            return out
-        target = out[..., start:end, :] if value_dim is None else out[..., start:end, -value_dim:]
-        strength = negpip_strength(hook_self, end - start, out.device, out.dtype)
-        target = target * strength if strength is not None else -target
-        if value_dim is None:
-            out[..., start:end, :] = target
-        else:
-            out[..., start:end, -value_dim:] = target
+        rows = negpip_rows(hook_self, out.shape[0])
+        if rows is not None:
+            if rows.numel() == 0:
+                return out
+            rows = rows.to(out.device)
+        width = slice(None) if value_dim is None else slice(out.shape[-1] - value_dim, None)
+        for start, end in spans:
+            strength = negpip_strength(hook_self, end - start, out.device, out.dtype)
+            if rows is None:
+                target = out[..., start:end, width]
+                out[..., start:end, width] = target * strength if strength is not None else -target
+            else:
+                target = out[rows, ..., start:end, width]
+                out[rows, ..., start:end, width] = target * strength if strength is not None else -target
         return out
 
     linear.forward = forward
@@ -985,6 +1123,21 @@ def hook_forwards_k(self, root_module: torch.nn.Module, remove=False):
             continue
         if (".blocks." in name and "txtfusion" not in name) or "refiner_blocks." in name:
             hook_value_projection(self, module, "wv", remove, name=name)
+
+def hook_forwards_m(self, root_module: torch.nn.Module, remove=False):
+    # MOSS-Image: single stream DiT, the image comes first and the text after it.
+    # The joint blocks keep q, k and v apart, or fuse them into proj.qkv as the
+    # Comfy-Org files do. The two blocks of text_embedder only attend over the
+    # text, like the caption refiner of Z-Image, and are left alone as that one
+    # is: the joint blocks alone already reach the whole range of the weight.
+    for name, module in root_module.named_modules():
+        if module.__class__.__name__ != "Block" or not isinstance(getattr(module, "proj", None), nn.ModuleDict):
+            continue
+        if "v" in module.proj:
+            hook_value_projection(self, module.proj, "v", remove, name=name, text_last=True)
+        elif "qkv" in module.proj:
+            dim = module.proj["qkv"].out_features // 3
+            hook_value_projection(self, module.proj, "qkv", remove, value_dim=dim, name=name, text_last=True)
 
 
 class InputAccordionImpl(gr.Checkbox):

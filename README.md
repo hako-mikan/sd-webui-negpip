@@ -7,6 +7,13 @@
 
 Extension for Stable Diffusion web-ui enables negative prompt in prompt
 
+## Update 2026.10.25.0000(JST)
+- support MOSS-Image in Forge NEO
+- fix the error with the text encoders of recent Forge NEO (`'Qwen06Engine' object has no attribute 'tokenize_line'`, #73, #74)
+- fix the error with a batch size above 1 on Anima (#71)
+- with a CFG above 1, the negative prompt is no longer affected when Forge NEO batches it together with the prompt
+- on Z-Image and Krea2 the negative words were encoded with their `(word:1.0)` brackets as plain text since the Forge NEO text encoder update, they are encoded as the word alone again
+
 ## Update 2026.09.04.20:00(JST)
 - note that on Krea2 only the sign of the weight has an effect
 - support Anima and Krea2 in Forge NEO
@@ -37,6 +44,10 @@ NegPiP tokens ride in the same residual stream as the image tokens, and every
 block starts with an RMS norm over that stream. Whatever scale is put on the
 value vectors is normalised away again before the next block sees it, leaving
 only the direction. Use it as a switch there.
+
+On **MOSS-Image** the weight works as a strength, on the same scale as the CLIP
+based models: around `-1` already removes the target, and from about `-3` the
+whole picture starts to change rather than just that element.
 
 This was created with the prompt "gothic dress". Despite including `(black:1.8)` in the negative prompt, it's still black. It seems impossible to completely eliminate the blackness of word `gothic`.
 
