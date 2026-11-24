@@ -246,11 +246,15 @@ class Script(modules.scripts.Script):
         if forge:
             engine = get_text_engine(p.sd_model)
             modelclass = type(p.sd_model).__name__
-            if modelclass in MODELTYPE_FROM_CLASS:
+            if modelclass in MODELTYPE_FROM_CLASS and engine is not None:
                 self.modeltype = modeltype = MODELTYPE_FROM_CLASS[modelclass]
                 # warm up / make sure the text encoder is resident before tokenizing
                 input = SdConditioning([""], width=p.width, height=p.height)
-                engine(input)
+                try:
+                    with torch.inference_mode():
+                        engine(input)
+                except RuntimeError:
+                    pass
             tokenizer = tokenize_wrapper(engine)
             if "flux" in str(type(p.sd_model.forge_objects.unet.model.diffusion_model)):
                 self.modeltype = modeltype = "flux"
