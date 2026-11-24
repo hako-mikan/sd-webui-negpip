@@ -414,16 +414,27 @@ class Script(modules.scripts.Script):
                     regionconds = []
                     for region, targets in regions:
                         if targets:
+                            self.strength = None
                             conds, contokens = conddealer(targets)
-                            regionconds.append([region, conds, contokens])
+                            regionconds.append([region, conds, contokens, getattr(self, "strength", None)])
                         else:
-                            regionconds.append([region, None, None])
-                    stepconds.append([step,regionconds])
+                            regionconds.append([region, None, None, None])
+                    stepconds.append([step, regionconds])
                 outconds.append(stepconds)
             return outconds
-            
+
         self.conds_all = calcconds(nip)
         self.unconds_all = calcconds(pin)
+
+        self.negpip_owners = None
+        if self.conds_all and self.conds_all[0] and self.conds_all[0][0] and self.conds_all[0][0][1]:
+            first_regions = self.conds_all[0][0][1]
+            self.negpip_owners = [
+                idx for idx, (_, c, _, _) in enumerate(first_regions)
+                if c is not None for _ in range(c.shape[1])
+            ]
+        if self.rpscript is not None and hasattr(self.rpscript, "set_negpip_owners"):
+            self.rpscript.set_negpip_owners(self.negpip_owners)
 
         if self.hrp: self.hr_conds_all = calcconds(hr_nip)
         if self.hrn: self.hr_unconds_all = calcconds(hr_pin)
@@ -451,7 +462,9 @@ class Script(modules.scripts.Script):
         #negpip operation is treated in regional prompter
 
         already_hooked = False
-        if self.rpscript is not None and hasattr(self.rpscript,"hooked"):already_hooked = self.rpscript.hooked
+        if self.rpscript is not None and hasattr(self.rpscript, "hooked"):
+            if self.modeltype not in LLM_MODELS:
+                already_hooked = self.rpscript.hooked
 
         if not already_hooked:
             self.handle = True
@@ -467,7 +480,11 @@ class Script(modules.scripts.Script):
         unload(self,p)
         self.conds_all = None
         self.unconds_all = None
-       
+        self.negpip_owners = None
+        rpscript = getattr(self, "rpscript", None)
+        if rpscript is not None and hasattr(rpscript, "set_negpip_owners"):
+            rpscript.set_negpip_owners(self.negpip_owners)
+
     def denoiser_callback(self, params: CFGDenoiserParams):
         if debug: print("denoiser_callback",params.sampling_step, params.text_cond.shape)
         if self.active:
@@ -479,65 +496,88 @@ class Script(modules.scripts.Script):
             if getattr(self, "handle", None) is not None:
                 hook_target(self, current_diffusion_model())
 
-            self.latenti = 0 
+            self.latenti = 0
 
             condslist = []
             tokenslist = []
-            conds = self.hr_conds_all if self.hrp and self.hr else  self.conds_all
+            strengthslist = []
+            conds = self.hr_conds_all if self.hrp and self.hr else self.conds_all
             if conds is not None:
                 for step, regions in conds[0]:
                     #print(" ", step,params.sampling_step)
                     if step >= params.sampling_step + 2:
-                        for region, conds, tokens in regions:
+                        for region, conds, tokens, strength in regions:
                             condslist.append(conds)
                             tokenslist.append(tokens)
+                            strengthslist.append(strength)
                             if debug: print(f"current:{params.sampling_step + 2},selected:{step}")
                         break
                 self.conds = condslist
                 self.contokens = tokenslist
+                self.strengths = strengthslist
 
             uncondslist = []
             untokenslist = []
-            unconds = self.hr_unconds_all if self.hrn and self.hr else  self.unconds_all
+            unconds = self.hr_unconds_all if self.hrn and self.hr else self.unconds_all
             if unconds is not None:
-                for step, regions  in unconds[0]:
+                for step, regions in unconds[0]:
                     if step >= params.sampling_step + 2:
-                        for region, unconds, untokens in regions:
+                        for region, unconds, untokens, _ in regions:
                             uncondslist.append(unconds)
                             untokenslist.append(untokens)
                             break
 
                 self.unconds = uncondslist
                 self.untokens = untokenslist
-                
+
             global pn, count
             #pn = False if forge or reforge or classic else True
             pn = True
             count = 0
-        
+
         if self.modeltype == "flux" and self.conds:
             self.orig_tokens = params.text_cond[COND_KEY_C].shape[1]
             params.text_cond[COND_KEY_C] = torch.cat([params.text_cond[COND_KEY_C],self.conds[0]],1)
 
+        self.combined_conds = None
+        self.combined_strength = None
+
         if self.modeltype in ("ZImage", "MOSS") and self.conds:
-            # both keep the end of the chat template, the tokens go in front of it
-            tail = MOSS_TAIL if self.modeltype == "MOSS" else 5
-            text_cond = params.text_cond
-            addcond = fit_cond(self.conds[0], text_cond, 1)
-            self.orig_tokens = text_cond.shape[1] - tail
-            params.text_cond = torch.cat([text_cond[:,:-tail],addcond,text_cond[:,-tail:]],1)
-            self.cond_len = params.text_cond.shape[1]
-            if debug_arch: print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape), "orig_tokens", self.orig_tokens)
+            pairs = [(c, s) for c, s in zip(self.conds, getattr(self, "strengths", [])) if c is not None]
+            if pairs:
+                # both keep the end of the chat template, the tokens go in front of it
+                tail = MOSS_TAIL if self.modeltype == "MOSS" else 5
+                text_cond = params.text_cond
+                merged_cond = torch.cat([c for c, _ in pairs], dim=1)
+                addcond = fit_cond(merged_cond, text_cond, 1)
+                self.orig_tokens = text_cond.shape[1] - tail
+                params.text_cond = torch.cat([text_cond[:, :-tail], addcond, text_cond[:, -tail:]], 1)
+                self.cond_len = params.text_cond.shape[1]
+                self.strength = [w for _, s in pairs for w in s]
+                self.combined_conds = merged_cond
+                self.combined_strength = self.strength
+                self.negpip_owners = [idx for idx, (c, _) in enumerate(self.conds) if c is not None for _ in range(c.shape[1])]
+                if debug_arch: print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape), "orig_tokens", self.orig_tokens, "owners", self.negpip_owners)
 
         if self.modeltype in ("Anima", "Krea") and self.conds:
-            text_cond = params.text_cond
-            # Anima: tokens on the second to last axis / Krea2: (batch, tokens, layers, dim)
-            axis = 1 if self.modeltype == "Krea" else text_cond.dim() - 2
-            addcond = fit_cond(self.conds[0], text_cond, axis)
-            self.orig_tokens = text_cond.shape[axis]
-            params.text_cond = torch.cat([text_cond, addcond], axis)
-            self.cond_len = params.text_cond.shape[axis]
-            if debug_arch: print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape), "orig_tokens", self.orig_tokens)
+            valid = [(idx, c, s) for idx, (c, s) in enumerate(zip(self.conds, getattr(self, "strengths", []))) if c is not None]
+            if valid:
+                # Anima: tokens on the second to last axis / Krea2: (batch, tokens, layers, dim)
+                text_cond = params.text_cond
+                axis = 1 if self.modeltype == "Krea" else text_cond.dim() - 2
+                merged_cond = torch.cat([c for _, c, _ in valid], dim=1)
+                addcond = fit_cond(merged_cond, text_cond, axis)
+                self.orig_tokens = text_cond.shape[axis]
+                params.text_cond = torch.cat([text_cond, addcond], axis)
+                self.cond_len = params.text_cond.shape[axis]
+                self.strength = [w for _, _, s in valid for w in s]
+                self.combined_conds = merged_cond
+                self.combined_strength = self.strength
+                self.negpip_owners = [idx for idx, c, _ in valid for _ in range(c.shape[1])]
+                if debug_arch: print("NegPiP/arch:", self.modeltype, tuple(text_cond.shape), "->", tuple(params.text_cond.shape), "orig_tokens", self.orig_tokens, "owners", self.negpip_owners)
+
+        if self.rpscript is not None and hasattr(self.rpscript, "set_negpip_owners"):
+            self.rpscript.set_negpip_owners(self.negpip_owners)
 
 def fit_cond(conds, text_cond, axis):
     """The NegPiP tokens shaped like ``text_cond`` on every axis but the token one.
@@ -984,12 +1024,17 @@ def hook_forward_f_s(self, module):
 
 def negpip_range(hook_self):
     """position of the NegPiP tokens inside the (already extended) conditioning"""
-    if not hook_self.active or not hook_self.contokens or not hook_self.conds:
+    if not hook_self.active or not hook_self.contokens:
+        return None
+    combined = getattr(hook_self, "combined_conds", None)
+    if combined is None and hook_self.conds:
+        combined = hook_self.conds[0]
+    if combined is None:
         return None
     start = getattr(hook_self, "orig_tokens", None)
     if start is None:
         return None
-    return start, start + hook_self.conds[0].shape[1]
+    return start, start + combined.shape[1]
 
 def negpip_spans(hook_self, length, text_last=False):
     """Where the NegPiP tokens are in a sequence of ``length`` tokens.
@@ -1039,10 +1084,25 @@ def negpip_strength(hook_self, length, device, dtype):
     """
     if hook_self.modeltype not in LLM_MODELS:
         return None
-    strength = getattr(hook_self, "strength", None)
+    strength = getattr(hook_self, "combined_strength", None) or getattr(hook_self, "strength", None)
     if not strength or len(strength) != length:
         return None
+    rpscript = getattr(hook_self, "rpscript", None)
+    latenti = rpscript.get_latenti() if rpscript is not None and hasattr(rpscript, "get_latenti") else None
+    owners = getattr(hook_self, "negpip_owners", None)
+
+    if latenti is not None and owners and len(owners) == length:
+        if latenti not in owners:
+            return None
+        strength = [s if o == latenti else 0.0 for s, o in zip(strength, owners)]
+
     gain = MODEL_GAIN.get(hook_self.modeltype, 1.0)
+
+    if latenti is None and rpscript is not None and getattr(rpscript, "dit_attn", False):
+        regions = len(getattr(hook_self, "conds", []) or [])
+        if regions > 1:
+            gain = gain / regions
+
     return torch.tensor(strength, device=device, dtype=dtype).view(1, -1, 1) * gain
 
 def hook_value_projection(self, module, attr, remove=False, value_dim=None, name="", text_last=False):
